@@ -38,13 +38,17 @@ const DEMO_VOICES_GEMINI = ["Kore", "Puck", "Aoede", "Charon", "Leda", "Orus", "
 const DEMO_VOICES_CHIRP = [
   "en-US-Chirp3-HD-Charon",
   "en-US-Chirp3-HD-Kore",
-  "en-IN-Chirp3-HD-Charon",
   "hi-IN-Chirp3-HD-Charon",
   "hi-IN-Chirp3-HD-Kore",
 ] as const;
 
 const WORDS_LIMIT = 5000;
 const STORAGE_KEY = "voiceforge_library";
+
+const LANGUAGES = [
+  { value: "en", label: "English" },
+  { value: "hi", label: "Hindi" },
+] as const;
 
 type Provider = "gemini" | "chirp";
 
@@ -67,7 +71,14 @@ type Clip = {
   duration?: number;
 };
 
-type ActiveView = "generator" | "library" | "teleprompter";
+type ActiveView = "generator" | "library";
+
+function toLanguageCode(language: (typeof LANGUAGES)[number]["value"], provider: Provider) {
+  if (provider === "chirp") {
+    return language === "hi" ? "hi-IN" : "en-US";
+  }
+  return language === "hi" ? "hi-IN" : "en";
+}
 
 // Helper functions
 function formatTime(ts: number) {
@@ -176,7 +187,10 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
 
   // Encode merged buffer to WAV
   const wavData = encodeWAV(mergedBuffer);
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(wavData)));
+  const bytes = new Uint8Array(wavData);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const base64 = btoa(bin);
 
   await audioContext.close();
 
@@ -355,17 +369,19 @@ export default function Home() {
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
 
-  const [geminiModel, setGeminiModel] = useState("gemini-2.5-flash-preview-tts");
-  const [chirpModel, setChirpModel] = useState("Chirp 3 HD");
+  const geminiModel = "gemini-2.5-pro-preview-tts";
+  const chirpModel = "Chirp 3 HD";
 
   const [voice, setVoice] = useState<string>(DEMO_VOICES_GEMINI[0]);
-  const [language, setLanguage] = useState<string>("hi-IN");
+  const [language, setLanguage] = useState<(typeof LANGUAGES)[number]["value"]>("en");
+
+  const [advancedOn, setAdvancedOn] = useState<boolean>(false);
   const [style, setStyle] = useState<string>("Warm, clear, confident");
   const [pace, setPace] = useState<number>(55);
   const [multiSpeaker, setMultiSpeaker] = useState<boolean>(false);
 
   const [text, setText] = useState<string>(
-    "Namaste! Main VoiceForge hoon. Aapka text yahan se studio-quality voice me convert hoga."
+    ""
   );
 
   // Large script mode
@@ -381,8 +397,6 @@ export default function Home() {
   const [duration, setDuration] = useState(0);
 
   // Teleprompter state
-  const [teleprompterClip, setTeleprompterClip] = useState<Clip | null>(null);
-  const [showTeleprompter, setShowTeleprompter] = useState(false);
 
   // Save to localStorage whenever clips change
   useEffect(() => {
@@ -397,6 +411,10 @@ export default function Home() {
   const currentModel = provider === "gemini" ? geminiModel : chirpModel;
   const wordCount = countWords(text);
   const needsChunking = wordCount > WORDS_LIMIT;
+
+  useEffect(() => {
+    setText(language === "hi" ? "Namaste! Apna text yahan likhiye.\n\nTip: Advanced settings ON karke style/pace controls dekhiye." : "Hello! Type your text here.\n\nTip: Turn ON Advanced settings to adjust style and pace.");
+  }, [language]);
 
   // Audio time update handler
   const handleTimeUpdate = useCallback(() => {
@@ -418,7 +436,7 @@ export default function Home() {
         body: JSON.stringify({
           text: textContent,
           voice,
-          language,
+          language: toLanguageCode(language, provider),
           style,
           pace,
           model: currentModel,
@@ -619,16 +637,6 @@ export default function Home() {
     });
   }
 
-  function openTeleprompter(clip: Clip) {
-    setTeleprompterClip(clip);
-    setShowTeleprompter(true);
-    playClip(clip);
-  }
-
-  function closeTeleprompter() {
-    setShowTeleprompter(false);
-    setTeleprompterClip(null);
-  }
 
   const nowPlayingClip = clips.find((c) => c.id === nowPlayingId);
 
@@ -647,18 +655,6 @@ export default function Home() {
         data-testid="audio-player"
       />
 
-      {/* Teleprompter Overlay */}
-      <AnimatePresence>
-        {showTeleprompter && teleprompterClip && (
-          <Teleprompter
-            text={teleprompterClip.text}
-            isPlaying={nowPlayingId === teleprompterClip.id}
-            currentTime={currentTime}
-            duration={duration}
-            onClose={closeTeleprompter}
-          />
-        )}
-      </AnimatePresence>
 
       <div className="mx-auto w-full max-w-md px-4 pb-24 pt-6">
         {/* Header */}
@@ -670,22 +666,13 @@ export default function Home() {
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/50">
-                <Sparkles className="h-4 w-4 text-primary" />
-                <span className="text-xs font-medium text-foreground" data-testid="text-badge">
-                  Studio-quality TTS
-                </span>
-              </div>
               <h1
-                className="mt-3 text-3xl font-semibold tracking-tight"
+                className="text-2xl font-semibold tracking-tight"
                 style={{ letterSpacing: "-0.02em" }}
                 data-testid="text-title"
               >
-                VoiceForge
+                TTS Generator
               </h1>
-              <p className="mt-1 text-sm text-muted-foreground" data-testid="text-subtitle">
-                Gemini 2.5 TTS + Chirp 3 HD with Library & Teleprompter
-              </p>
             </div>
 
             <Button
@@ -702,18 +689,14 @@ export default function Home() {
 
         {/* Main Tabs */}
         <Tabs value={activeView} onValueChange={(v) => setActiveView(v as ActiveView)} className="w-full">
-          <TabsList className="grid w-full grid-cols-3 mb-4">
-            <TabsTrigger value="generator" className="gap-1">
+          <TabsList className="grid w-full grid-cols-2 mb-4" data-testid="tabs-main">
+            <TabsTrigger value="generator" className="gap-1" data-testid="tab-main-generator">
               <Wand2 className="h-3.5 w-3.5" />
               Generate
             </TabsTrigger>
-            <TabsTrigger value="library" className="gap-1">
+            <TabsTrigger value="library" className="gap-1" data-testid="tab-main-library">
               <AudioLines className="h-3.5 w-3.5" />
               Library ({clips.length})
-            </TabsTrigger>
-            <TabsTrigger value="teleprompter" className="gap-1">
-              <BookOpen className="h-3.5 w-3.5" />
-              Teleprompter
             </TabsTrigger>
           </TabsList>
 
@@ -747,32 +730,24 @@ export default function Home() {
                   </TabsList>
 
                   <TabsContent value="gemini" className="mt-4 space-y-4" data-testid="tabcontent-gemini">
-                    <div className="space-y-2">
-                      <Label data-testid="label-model-gemini">Model</Label>
-                      <Input
-                        value={geminiModel}
-                        onChange={(e) => setGeminiModel(e.target.value)}
-                        placeholder="gemini-2.5-flash-preview-tts"
-                        data-testid="input-model-gemini"
-                      />
-                      <p className="text-xs text-muted-foreground" data-testid="text-model-help-gemini">
-                        Uses Gemini API for speech generation.
-                      </p>
+                    <div className="rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
+                      <div className="text-xs font-medium text-foreground" data-testid="text-model-gemini">
+                        Model: {geminiModel}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground" data-testid="text-model-gemini-help">
+                        Fixed (Pro). Real generation needs secure server-side calls.
+                      </div>
                     </div>
                   </TabsContent>
 
                   <TabsContent value="chirp" className="mt-4 space-y-4" data-testid="tabcontent-chirp">
-                    <div className="space-y-2">
-                      <Label data-testid="label-model-chirp">Engine</Label>
-                      <Input
-                        value={chirpModel}
-                        onChange={(e) => setChirpModel(e.target.value)}
-                        placeholder="Chirp 3 HD"
-                        data-testid="input-model-chirp"
-                      />
-                      <p className="text-xs text-muted-foreground" data-testid="text-model-help-chirp">
-                        Uses Google Cloud TTS with Chirp3-HD voices.
-                      </p>
+                    <div className="rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
+                      <div className="text-xs font-medium text-foreground" data-testid="text-model-chirp">
+                        Engine: {chirpModel}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted-foreground" data-testid="text-model-chirp-help">
+                        Use voices like en-US-Chirp3-HD-Charon.
+                      </div>
                     </div>
                   </TabsContent>
                 </Tabs>
@@ -797,31 +772,36 @@ export default function Home() {
 
                   <div className="space-y-2">
                     <Label data-testid="label-language">Language</Label>
-                    <Input
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                      placeholder="hi-IN"
-                      data-testid="input-language"
-                    />
+                    <Select value={language} onValueChange={(v) => setLanguage(v as any)}>
+                      <SelectTrigger data-testid="select-language">
+                        <SelectValue placeholder="Select language" />
+                      </SelectTrigger>
+                      <SelectContent data-testid="selectcontent-language">
+                        {LANGUAGES.map((l) => (
+                          <SelectItem key={l.value} value={l.value} data-testid={`option-language-${l.value}`}>
+                            {l.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
 
-                {/* Large Script Toggle */}
-                <div className="flex items-center justify-between rounded-lg border border-border/70 bg-muted/30 p-3">
+                {/* Advanced Settings Toggle */}
+                <div
+                  className="flex items-center justify-between rounded-lg border border-border/70 bg-muted/30 p-3"
+                  data-testid="row-advanced-settings"
+                >
                   <div className="flex items-center gap-2">
-                    <Split className="h-4 w-4 text-primary" />
+                    <Sparkles className="h-4 w-4 text-primary" />
                     <div>
-                      <div className="text-sm font-medium">Large Script Mode</div>
-                      <div className="text-xs text-muted-foreground">
-                        Auto-split scripts over {WORDS_LIMIT} words
+                      <div className="text-sm font-medium" data-testid="text-advanced-title">Advanced settings</div>
+                      <div className="text-xs text-muted-foreground" data-testid="text-advanced-subtitle">
+                        Style, pace, 2 speakers, long script
                       </div>
                     </div>
                   </div>
-                  <Switch
-                    checked={largeScriptMode}
-                    onCheckedChange={setLargeScriptMode}
-                    data-testid="switch-large-script"
-                  />
+                  <Switch checked={advancedOn} onCheckedChange={setAdvancedOn} data-testid="switch-advanced" />
                 </div>
 
                 {/* Text Input */}
@@ -849,67 +829,92 @@ export default function Home() {
                     placeholder="Type or paste your script here..."
                     data-testid="textarea-text"
                   />
-                  {needsChunking && !largeScriptMode && (
-                    <p className="text-xs text-amber-600">
-                      Script exceeds {WORDS_LIMIT} words. Enable Large Script Mode for best results.
+                  {needsChunking && !advancedOn && (
+                    <p className="text-xs text-amber-600" data-testid="text-advanced-needed">
+                      Script is long. Turn ON Advanced settings to enable Large script mode.
+                    </p>
+                  )}
+                  {needsChunking && advancedOn && !largeScriptMode && (
+                    <p className="text-xs text-amber-600" data-testid="text-longscript-warning">
+                      Script exceeds {WORDS_LIMIT} words. Enable Large script mode for best results.
                     </p>
                   )}
                 </div>
 
-                {/* Style Controls */}
-                <div className="rounded-xl border border-border/70 bg-muted/40 p-3" data-testid="card-controls">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium" data-testid="text-controls-title">
-                        Style controls
+                {advancedOn && (
+                  <div className="rounded-xl border border-border/70 bg-muted/40 p-3" data-testid="card-controls">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium" data-testid="text-controls-title">
+                          Style controls
+                        </div>
+                        <div className="text-xs text-muted-foreground" data-testid="text-controls-subtitle">
+                          Prompt-driven vibe + pacing
+                        </div>
                       </div>
-                      <div className="text-xs text-muted-foreground" data-testid="text-controls-subtitle">
-                        Prompt-driven vibe + pacing
+                      <div className="flex items-center gap-2">
+                        <Label className="text-xs" data-testid="label-multispeaker">
+                          2 speakers
+                        </Label>
+                        <Switch
+                          checked={multiSpeaker}
+                          onCheckedChange={setMultiSpeaker}
+                          data-testid="switch-multispeaker"
+                        />
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Label className="text-xs" data-testid="label-multispeaker">
-                        2 speakers
-                      </Label>
-                      <Switch
-                        checked={multiSpeaker}
-                        onCheckedChange={setMultiSpeaker}
-                        data-testid="switch-multispeaker"
-                      />
+
+                    <Separator className="my-3" />
+
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label data-testid="label-style">Style prompt</Label>
+                        <Input
+                          value={style}
+                          onChange={(e) => setStyle(e.target.value)}
+                          placeholder="Warm, clear, confident"
+                          data-testid="input-style"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <Label data-testid="label-pace">Pace</Label>
+                          <Badge variant="secondary" data-testid="badge-pace">
+                            {pace}%
+                          </Badge>
+                        </div>
+                        <Slider
+                          value={[pace]}
+                          onValueChange={(v) => setPace(v[0] ?? 50)}
+                          min={20}
+                          max={90}
+                          step={1}
+                          data-testid="slider-pace"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between rounded-lg border border-border/70 bg-background/40 p-3">
+                        <div className="flex items-center gap-2">
+                          <Split className="h-4 w-4 text-primary" />
+                          <div>
+                            <div className="text-sm font-medium" data-testid="text-large-script-title">
+                              Large script mode
+                            </div>
+                            <div className="text-xs text-muted-foreground" data-testid="text-large-script-subtitle">
+                              Auto-split scripts over {WORDS_LIMIT} words
+                            </div>
+                          </div>
+                        </div>
+                        <Switch
+                          checked={largeScriptMode}
+                          onCheckedChange={setLargeScriptMode}
+                          data-testid="switch-large-script"
+                        />
+                      </div>
                     </div>
                   </div>
-
-                  <Separator className="my-3" />
-
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <Label data-testid="label-style">Style prompt</Label>
-                      <Input
-                        value={style}
-                        onChange={(e) => setStyle(e.target.value)}
-                        placeholder="Warm, clear, confident"
-                        data-testid="input-style"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <Label data-testid="label-pace">Pace</Label>
-                        <Badge variant="secondary" data-testid="badge-pace">
-                          {pace}%
-                        </Badge>
-                      </div>
-                      <Slider
-                        value={[pace]}
-                        onValueChange={(v) => setPace(v[0] ?? 50)}
-                        min={20}
-                        max={90}
-                        step={1}
-                        data-testid="slider-pace"
-                      />
-                    </div>
-                  </div>
-                </div>
+                )}
 
                 {/* Chunk Progress */}
                 {chunkProgress.total > 0 && (
