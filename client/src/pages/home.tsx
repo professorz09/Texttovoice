@@ -11,8 +11,7 @@ import {
   Mic,
   Pause,
   Play,
-  Save,
-  Sparkles,
+  Settings,
   Split,
   Trash2,
   Wand2,
@@ -20,7 +19,6 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -31,16 +29,26 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
+// Fixed model names (not editable)
+const GEMINI_MODEL = "gemini-2.5-pro-preview-tts";
+const CHIRP_MODEL = "chirp3-hd";
+
 // Voice options for each provider
-const DEMO_VOICES_GEMINI = ["Kore", "Puck", "Aoede", "Charon", "Leda", "Orus", "Zephyr"] as const;
-const DEMO_VOICES_CHIRP = [
+const VOICES_GEMINI = ["Kore", "Puck", "Aoede", "Charon", "Leda", "Orus", "Zephyr"] as const;
+const VOICES_CHIRP = [
   "en-US-Chirp3-HD-Charon",
   "en-US-Chirp3-HD-Kore",
-  "en-IN-Chirp3-HD-Charon",
   "hi-IN-Chirp3-HD-Charon",
   "hi-IN-Chirp3-HD-Kore",
+] as const;
+
+// Language options (only English and Hindi)
+const LANGUAGES = [
+  { code: "en-US", name: "English" },
+  { code: "hi-IN", name: "Hindi" },
 ] as const;
 
 const WORDS_LIMIT = 5000;
@@ -62,7 +70,7 @@ type Clip = {
     multiSpeaker: boolean;
   };
   text: string;
-  audioData?: string; // base64 audio data
+  audioData?: string;
   mimeType?: string;
   duration?: number;
 };
@@ -91,11 +99,9 @@ function countWords(text: string): number {
 function splitTextIntoChunks(text: string, maxWords: number): string[] {
   const words = text.trim().split(/\s+/);
   const chunks: string[] = [];
-
   for (let i = 0; i < words.length; i += maxWords) {
     chunks.push(words.slice(i, i + maxWords).join(" "));
   }
-
   return chunks;
 }
 
@@ -120,17 +126,11 @@ function saveLibraryToStorage(clips: Clip[]) {
   }
 }
 
-// Audio merge helper - concatenates base64 audio chunks
+// Audio merge helper
 async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): Promise<{ audio: string; mimeType: string }> {
-  if (chunks.length === 0) {
-    throw new Error("No audio chunks to merge");
-  }
+  if (chunks.length === 0) throw new Error("No audio chunks to merge");
+  if (chunks.length === 1) return { audio: chunks[0].audio, mimeType: chunks[0].mimeType };
 
-  if (chunks.length === 1) {
-    return { audio: chunks[0].audio, mimeType: chunks[0].mimeType };
-  }
-
-  // Convert base64 chunks to array buffers
   const audioBuffers: ArrayBuffer[] = [];
   for (const chunk of chunks) {
     const binary = atob(chunk.audio);
@@ -141,7 +141,6 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
     audioBuffers.push(bytes.buffer);
   }
 
-  // Create audio context for decoding and merging
   const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
   const decodedBuffers: AudioBuffer[] = [];
 
@@ -154,16 +153,12 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
     }
   }
 
-  if (decodedBuffers.length === 0) {
-    throw new Error("Failed to decode any audio chunks");
-  }
+  if (decodedBuffers.length === 0) throw new Error("Failed to decode any audio chunks");
 
-  // Calculate total length
   const totalLength = decodedBuffers.reduce((sum, buf) => sum + buf.length, 0);
   const numberOfChannels = decodedBuffers[0].numberOfChannels;
   const sampleRate = decodedBuffers[0].sampleRate;
 
-  // Create merged buffer
   const mergedBuffer = audioContext.createBuffer(numberOfChannels, totalLength, sampleRate);
 
   let offset = 0;
@@ -174,20 +169,17 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
     offset += buffer.length;
   }
 
-  // Encode merged buffer to WAV
   const wavData = encodeWAV(mergedBuffer);
   const base64 = btoa(String.fromCharCode(...new Uint8Array(wavData)));
-
   await audioContext.close();
 
   return { audio: base64, mimeType: "audio/wav" };
 }
 
-// WAV encoder
 function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
   const numberOfChannels = audioBuffer.numberOfChannels;
   const sampleRate = audioBuffer.sampleRate;
-  const format = 1; // PCM
+  const format = 1;
   const bitDepth = 16;
 
   const bytesPerSample = bitDepth / 8;
@@ -200,33 +192,26 @@ function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
   const buffer = new ArrayBuffer(totalSize);
   const view = new DataView(buffer);
 
-  // RIFF header
   writeString(view, 0, "RIFF");
   view.setUint32(4, totalSize - 8, true);
   writeString(view, 8, "WAVE");
-
-  // fmt chunk
   writeString(view, 12, "fmt ");
-  view.setUint32(16, 16, true); // chunk size
+  view.setUint32(16, 16, true);
   view.setUint16(20, format, true);
   view.setUint16(22, numberOfChannels, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);
   view.setUint16(32, blockAlign, true);
   view.setUint16(34, bitDepth, true);
-
-  // data chunk
   writeString(view, 36, "data");
   view.setUint32(40, dataSize, true);
 
-  // Write audio data
-  const offset = 44;
   const channels: Float32Array[] = [];
   for (let i = 0; i < numberOfChannels; i++) {
     channels.push(audioBuffer.getChannelData(i));
   }
 
-  let pos = offset;
+  let pos = 44;
   for (let i = 0; i < audioBuffer.length; i++) {
     for (let ch = 0; ch < numberOfChannels; ch++) {
       const sample = Math.max(-1, Math.min(1, channels[ch][i]));
@@ -245,7 +230,6 @@ function writeString(view: DataView, offset: number, str: string) {
   }
 }
 
-// Demo WAV for fallback
 function buildDemoWavBase64() {
   return "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
 }
@@ -355,18 +339,16 @@ export default function Home() {
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
 
-  const [geminiModel, setGeminiModel] = useState("gemini-2.5-flash-preview-tts");
-  const [chirpModel, setChirpModel] = useState("Chirp 3 HD");
-
-  const [voice, setVoice] = useState<string>(DEMO_VOICES_GEMINI[0]);
-  const [language, setLanguage] = useState<string>("hi-IN");
+  const [voice, setVoice] = useState<string>(VOICES_GEMINI[0]);
+  const [language, setLanguage] = useState<string>("en-US"); // English default
   const [style, setStyle] = useState<string>("Warm, clear, confident");
   const [pace, setPace] = useState<number>(55);
   const [multiSpeaker, setMultiSpeaker] = useState<boolean>(false);
 
-  const [text, setText] = useState<string>(
-    "Namaste! Main VoiceForge hoon. Aapka text yahan se studio-quality voice me convert hoga."
-  );
+  // Advanced settings toggle (default off)
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [text, setText] = useState<string>("");
 
   // Large script mode
   const [largeScriptMode, setLargeScriptMode] = useState(false);
@@ -380,25 +362,22 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // Teleprompter state
   const [teleprompterClip, setTeleprompterClip] = useState<Clip | null>(null);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
 
-  // Save to localStorage whenever clips change
   useEffect(() => {
     saveLibraryToStorage(clips);
   }, [clips]);
 
   const voicesForProvider = useMemo(() => {
-    if (provider === "gemini") return DEMO_VOICES_GEMINI as readonly string[];
-    return DEMO_VOICES_CHIRP as readonly string[];
+    if (provider === "gemini") return VOICES_GEMINI as readonly string[];
+    return VOICES_CHIRP as readonly string[];
   }, [provider]);
 
-  const currentModel = provider === "gemini" ? geminiModel : chirpModel;
+  const currentModel = provider === "gemini" ? GEMINI_MODEL : CHIRP_MODEL;
   const wordCount = countWords(text);
   const needsChunking = wordCount > WORDS_LIMIT;
 
-  // Audio time update handler
   const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
     if (audio) {
@@ -407,7 +386,6 @@ export default function Home() {
     }
   }, []);
 
-  // Generate TTS via API
   async function generateTTS(textContent: string): Promise<{ audio: string; mimeType: string } | null> {
     try {
       const endpoint = provider === "gemini" ? "/api/tts/gemini" : "/api/tts/chirp";
@@ -428,7 +406,6 @@ export default function Home() {
       const data = await response.json();
 
       if (data.demo || data.error) {
-        // Fallback to demo mode
         return {
           audio: buildDemoWavBase64(),
           mimeType: "audio/wav",
@@ -441,7 +418,6 @@ export default function Home() {
       };
     } catch (error) {
       console.error("TTS generation error:", error);
-      // Fallback to demo
       return {
         audio: buildDemoWavBase64(),
         mimeType: "audio/wav",
@@ -464,7 +440,6 @@ export default function Home() {
       let audioResult: { audio: string; mimeType: string } | null = null;
 
       if (largeScriptMode && needsChunking) {
-        // Split into chunks and process sequentially
         const chunks = splitTextIntoChunks(text, WORDS_LIMIT);
         setChunkProgress({ current: 0, total: chunks.length });
 
@@ -474,7 +449,7 @@ export default function Home() {
           setChunkProgress({ current: i + 1, total: chunks.length });
 
           toast({
-            title: `Processing chunk ${i + 1}/${chunks.length}`,
+            title: `Processing ${i + 1}/${chunks.length}`,
             description: `Generating audio for section ${i + 1}...`,
           });
 
@@ -483,28 +458,24 @@ export default function Home() {
             audioChunks.push(chunkResult);
           }
 
-          // Small delay between chunks
           await new Promise((r) => setTimeout(r, 300));
         }
 
-        // Merge all chunks
         if (audioChunks.length > 0) {
           toast({
             title: "Merging audio",
-            description: "Combining all chunks into one file...",
+            description: "Combining all chunks...",
           });
 
           try {
             audioResult = await mergeAudioChunks(audioChunks);
           } catch (e) {
-            // If merge fails, use last chunk
             audioResult = audioChunks[audioChunks.length - 1];
           }
         }
 
         setChunkProgress({ current: 0, total: 0 });
       } else {
-        // Single generation
         audioResult = await generateTTS(text);
       }
 
@@ -538,16 +509,14 @@ export default function Home() {
       setClips((prev) => [clip, ...prev]);
 
       toast({
-        title: "Generated successfully",
-        description: largeScriptMode && needsChunking
-          ? `Audio created from ${Math.ceil(wordCount / WORDS_LIMIT)} chunks and merged.`
-          : "Your voice clip has been saved to the library.",
+        title: "Saved to library",
+        description: "Your voice clip is ready!",
       });
     } catch (error) {
       console.error("Generation error:", error);
       toast({
         title: "Error",
-        description: "Failed to generate speech. Please try again.",
+        description: "Failed to generate speech.",
         variant: "destructive",
       });
     } finally {
@@ -606,16 +575,7 @@ export default function Home() {
     setClips((prev) => prev.filter((c) => c.id !== clipId));
     toast({
       title: "Deleted",
-      description: "Clip removed from library.",
-    });
-  }
-
-  function clearAll() {
-    stopPlayback();
-    setClips([]);
-    toast({
-      title: "Library cleared",
-      description: "All clips have been removed.",
+      description: "Clip removed.",
     });
   }
 
@@ -647,7 +607,6 @@ export default function Home() {
         data-testid="audio-player"
       />
 
-      {/* Teleprompter Overlay */}
       <AnimatePresence>
         {showTeleprompter && teleprompterClip && (
           <Teleprompter
@@ -660,46 +619,7 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      <div className="mx-auto w-full max-w-md px-4 pb-24 pt-6">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.35 }}
-          className="mb-5"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-border/70 bg-card/60 px-3 py-1.5 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/50">
-                <Sparkles className="h-4 w-4 text-primary" />
-                <span className="text-xs font-medium text-foreground" data-testid="text-badge">
-                  Studio-quality TTS
-                </span>
-              </div>
-              <h1
-                className="mt-3 text-3xl font-semibold tracking-tight"
-                style={{ letterSpacing: "-0.02em" }}
-                data-testid="text-title"
-              >
-                VoiceForge
-              </h1>
-              <p className="mt-1 text-sm text-muted-foreground" data-testid="text-subtitle">
-                Gemini 2.5 TTS + Chirp 3 HD with Library & Teleprompter
-              </p>
-            </div>
-
-            <Button
-              variant="secondary"
-              className="shrink-0 rounded-full"
-              onClick={clearAll}
-              data-testid="button-clear"
-            >
-              <Trash2 className="h-4 w-4" />
-              Clear
-            </Button>
-          </div>
-        </motion.div>
-
+      <div className="mx-auto w-full max-w-md px-4 pb-24 pt-4">
         {/* Main Tabs */}
         <Tabs value={activeView} onValueChange={(v) => setActiveView(v as ActiveView)} className="w-full">
           <TabsList className="grid w-full grid-cols-3 mb-4">
@@ -720,74 +640,33 @@ export default function Home() {
           {/* Generator Tab */}
           <TabsContent value="generator">
             <Card className="border-border/70 bg-card/70 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-card/60">
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base" data-testid="text-generator-title">
-                  <Wand2 className="h-4 w-4 text-primary" />
-                  Generator
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="pt-4 space-y-4">
                 {/* Provider Tabs */}
                 <Tabs
                   value={provider}
                   onValueChange={(v) => {
                     const p = v as Provider;
                     setProvider(p);
-                    setVoice(p === "gemini" ? DEMO_VOICES_GEMINI[0] : DEMO_VOICES_CHIRP[0]);
+                    setVoice(p === "gemini" ? VOICES_GEMINI[0] : VOICES_CHIRP[0]);
                   }}
-                  data-testid="tabs-provider"
                 >
-                  <TabsList className="grid w-full grid-cols-2" data-testid="tabslist-provider">
-                    <TabsTrigger value="gemini" data-testid="tab-gemini">
-                      Gemini
-                    </TabsTrigger>
-                    <TabsTrigger value="chirp" data-testid="tab-chirp">
-                      Chirp 3 HD
-                    </TabsTrigger>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="gemini">Gemini 2.5 Pro</TabsTrigger>
+                    <TabsTrigger value="chirp">Chirp 3 HD</TabsTrigger>
                   </TabsList>
-
-                  <TabsContent value="gemini" className="mt-4 space-y-4" data-testid="tabcontent-gemini">
-                    <div className="space-y-2">
-                      <Label data-testid="label-model-gemini">Model</Label>
-                      <Input
-                        value={geminiModel}
-                        onChange={(e) => setGeminiModel(e.target.value)}
-                        placeholder="gemini-2.5-flash-preview-tts"
-                        data-testid="input-model-gemini"
-                      />
-                      <p className="text-xs text-muted-foreground" data-testid="text-model-help-gemini">
-                        Uses Gemini API for speech generation.
-                      </p>
-                    </div>
-                  </TabsContent>
-
-                  <TabsContent value="chirp" className="mt-4 space-y-4" data-testid="tabcontent-chirp">
-                    <div className="space-y-2">
-                      <Label data-testid="label-model-chirp">Engine</Label>
-                      <Input
-                        value={chirpModel}
-                        onChange={(e) => setChirpModel(e.target.value)}
-                        placeholder="Chirp 3 HD"
-                        data-testid="input-model-chirp"
-                      />
-                      <p className="text-xs text-muted-foreground" data-testid="text-model-help-chirp">
-                        Uses Google Cloud TTS with Chirp3-HD voices.
-                      </p>
-                    </div>
-                  </TabsContent>
                 </Tabs>
 
                 {/* Voice & Language */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
-                    <Label data-testid="label-voice">Voice</Label>
+                    <Label>Voice</Label>
                     <Select value={voice} onValueChange={setVoice}>
-                      <SelectTrigger data-testid="select-voice">
+                      <SelectTrigger>
                         <SelectValue placeholder="Select voice" />
                       </SelectTrigger>
-                      <SelectContent data-testid="selectcontent-voice">
+                      <SelectContent>
                         {voicesForProvider.map((v) => (
-                          <SelectItem key={v} value={v} data-testid={`option-voice-${v}`}>
+                          <SelectItem key={v} value={v}>
                             {v}
                           </SelectItem>
                         ))}
@@ -796,13 +675,19 @@ export default function Home() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label data-testid="label-language">Language</Label>
-                    <Input
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                      placeholder="hi-IN"
-                      data-testid="input-language"
-                    />
+                    <Label>Language</Label>
+                    <Select value={language} onValueChange={setLanguage}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {LANGUAGES.map((lang) => (
+                          <SelectItem key={lang.code} value={lang.code}>
+                            {lang.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
 
@@ -820,14 +705,13 @@ export default function Home() {
                   <Switch
                     checked={largeScriptMode}
                     onCheckedChange={setLargeScriptMode}
-                    data-testid="switch-large-script"
                   />
                 </div>
 
                 {/* Text Input */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label data-testid="label-text">Text</Label>
+                    <Label>Text</Label>
                     <div className="flex items-center gap-2">
                       <Badge
                         variant={needsChunking && !largeScriptMode ? "destructive" : "secondary"}
@@ -845,59 +729,49 @@ export default function Home() {
                   <Textarea
                     value={text}
                     onChange={(e) => setText(e.target.value)}
-                    className="min-h-28"
+                    className="min-h-32"
                     placeholder="Type or paste your script here..."
-                    data-testid="textarea-text"
                   />
                   {needsChunking && !largeScriptMode && (
                     <p className="text-xs text-amber-600">
-                      Script exceeds {WORDS_LIMIT} words. Enable Large Script Mode for best results.
+                      Enable Large Script Mode for scripts over {WORDS_LIMIT} words.
                     </p>
                   )}
                 </div>
 
-                {/* Style Controls */}
-                <div className="rounded-xl border border-border/70 bg-muted/40 p-3" data-testid="card-controls">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium" data-testid="text-controls-title">
-                        Style controls
-                      </div>
-                      <div className="text-xs text-muted-foreground" data-testid="text-controls-subtitle">
-                        Prompt-driven vibe + pacing
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Label className="text-xs" data-testid="label-multispeaker">
-                        2 speakers
-                      </Label>
-                      <Switch
-                        checked={multiSpeaker}
-                        onCheckedChange={setMultiSpeaker}
-                        data-testid="switch-multispeaker"
-                      />
-                    </div>
+                {/* Advanced Settings Toggle */}
+                <div className="flex items-center justify-between rounded-lg border border-border/70 bg-muted/30 p-3">
+                  <div className="flex items-center gap-2">
+                    <Settings className="h-4 w-4 text-primary" />
+                    <div className="text-sm font-medium">Advanced Settings</div>
                   </div>
+                  <Switch
+                    checked={showAdvanced}
+                    onCheckedChange={setShowAdvanced}
+                  />
+                </div>
 
-                  <Separator className="my-3" />
-
-                  <div className="space-y-3">
+                {/* Advanced Style Controls (only shown when toggle is on) */}
+                {showAdvanced && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="rounded-xl border border-border/70 bg-muted/40 p-3 space-y-3"
+                  >
                     <div className="space-y-2">
-                      <Label data-testid="label-style">Style prompt</Label>
+                      <Label>Style prompt</Label>
                       <Input
                         value={style}
                         onChange={(e) => setStyle(e.target.value)}
                         placeholder="Warm, clear, confident"
-                        data-testid="input-style"
                       />
                     </div>
 
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <Label data-testid="label-pace">Pace</Label>
-                        <Badge variant="secondary" data-testid="badge-pace">
-                          {pace}%
-                        </Badge>
+                        <Label>Pace</Label>
+                        <Badge variant="secondary">{pace}%</Badge>
                       </div>
                       <Slider
                         value={[pace]}
@@ -905,11 +779,20 @@ export default function Home() {
                         min={20}
                         max={90}
                         step={1}
-                        data-testid="slider-pace"
                       />
                     </div>
-                  </div>
-                </div>
+
+                    <Separator />
+
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">2 Speakers Mode</Label>
+                      <Switch
+                        checked={multiSpeaker}
+                        onCheckedChange={setMultiSpeaker}
+                      />
+                    </div>
+                  </motion.div>
+                )}
 
                 {/* Chunk Progress */}
                 {chunkProgress.total > 0 && (
@@ -927,7 +810,6 @@ export default function Home() {
                   className="w-full"
                   onClick={onGenerate}
                   disabled={isGenerating}
-                  data-testid="button-generate"
                 >
                   {isGenerating ? (
                     <span className="inline-flex items-center gap-2">
@@ -939,7 +821,7 @@ export default function Home() {
                   ) : (
                     <span className="inline-flex items-center gap-2">
                       <Mic className="h-4 w-4" />
-                      Generate speech
+                      Generate Speech
                     </span>
                   )}
                 </Button>
@@ -957,16 +839,15 @@ export default function Home() {
                   size="sm"
                   className="rounded-full"
                   onClick={stopPlayback}
-                  data-testid="button-stop"
                 >
                   <Pause className="h-4 w-4" />
                   Stop
                 </Button>
               </div>
 
-              <div className="space-y-3" data-testid="list-clips">
+              <div className="space-y-3">
                 {clips.length === 0 ? (
-                  <Card className="border-dashed bg-card/50" data-testid="card-empty">
+                  <Card className="border-dashed bg-card/50">
                     <CardContent className="py-8">
                       <div className="text-center">
                         <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/10 text-primary">
@@ -974,7 +855,7 @@ export default function Home() {
                         </div>
                         <div className="text-sm font-medium">No clips yet</div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          Generate your first voice clip to save it here.
+                          Generate your first voice clip.
                         </div>
                       </div>
                     </CardContent>
@@ -983,11 +864,7 @@ export default function Home() {
                   clips.map((clip) => {
                     const isPlaying = nowPlayingId === clip.id;
                     return (
-                      <Card
-                        key={clip.id}
-                        className="border-border/70 bg-card/70 shadow-sm"
-                        data-testid={`card-clip-${clip.id}`}
-                      >
+                      <Card key={clip.id} className="border-border/70 bg-card/70 shadow-sm">
                         <CardContent className="p-4">
                           <div className="flex items-start justify-between gap-3">
                             <div className="min-w-0">
@@ -1000,7 +877,7 @@ export default function Home() {
                                 </Badge>
                               </div>
                               <div className="mt-1 text-xs text-muted-foreground">
-                                {formatTime(clip.createdAt)} • {clip.settings.language} • {countWords(clip.text)} words
+                                {formatTime(clip.createdAt)} • {clip.settings.language === "en-US" ? "English" : "Hindi"} • {countWords(clip.text)} words
                               </div>
                             </div>
 
@@ -1011,11 +888,7 @@ export default function Home() {
                                 className="h-8 w-8 rounded-full"
                                 onClick={() => playClip(clip)}
                               >
-                                {isPlaying ? (
-                                  <Pause className="h-3.5 w-3.5" />
-                                ) : (
-                                  <Play className="h-3.5 w-3.5" />
-                                )}
+                                {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                               </Button>
 
                               <Button
@@ -1023,7 +896,7 @@ export default function Home() {
                                 variant="secondary"
                                 className="h-8 w-8 rounded-full"
                                 onClick={() => openTeleprompter(clip)}
-                                title="Open in Teleprompter"
+                                title="Teleprompter"
                               >
                                 <BookOpen className="h-3.5 w-3.5" />
                               </Button>
@@ -1066,20 +939,19 @@ export default function Home() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-base">
                   <BookOpen className="h-4 w-4 text-primary" />
-                  Teleprompter Mode
+                  Teleprompter
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Select a clip from your library to play with the teleprompter. The text will scroll
-                  and highlight as the audio plays, showing you what's coming next.
+                  Select a clip to play with teleprompter. Text highlights as audio plays.
                 </p>
 
                 {clips.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-border/70 p-6 text-center">
                     <FileText className="mx-auto h-8 w-8 text-muted-foreground/50" />
                     <p className="mt-2 text-sm text-muted-foreground">
-                      No clips available. Generate some audio first!
+                      No clips available. Generate audio first!
                     </p>
                   </div>
                 ) : (
@@ -1114,7 +986,7 @@ export default function Home() {
                       </div>
                       <Button size="sm" variant="secondary" onClick={() => openTeleprompter(nowPlayingClip)}>
                         <BookOpen className="mr-1 h-3.5 w-3.5" />
-                        Open Teleprompter
+                        Open
                       </Button>
                     </div>
                     <div className="mt-2 text-sm text-muted-foreground truncate">
@@ -1126,31 +998,10 @@ export default function Home() {
             </Card>
           </TabsContent>
         </Tabs>
-
-        {/* Info Callout */}
-        <div className="mt-6 rounded-2xl border border-border/70 bg-card/60 p-4 text-xs text-muted-foreground">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-              <Save className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">
-                Auto-saved Library
-              </div>
-              <div className="mt-1">
-                All clips are automatically saved to your browser's local storage.
-                They persist even after closing the browser. Download anytime with one click!
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* Bottom Navigation */}
-      <div
-        className="fixed inset-x-0 bottom-0 z-40 border-t border-border/70 bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60"
-        data-testid="bottom-nav"
-      >
+      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-border/70 bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60">
         <div className="mx-auto grid max-w-md grid-cols-3 px-4 py-3">
           <button
             onClick={() => setActiveView("generator")}
