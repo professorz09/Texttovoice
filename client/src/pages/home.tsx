@@ -14,6 +14,7 @@ import {
   Trash2,
   Wand2,
   X,
+  AlertCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -30,11 +31,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
-// Fixed model names
 const GEMINI_MODEL = "gemini-2.5-pro-preview-tts";
 const CHIRP_MODEL = "chirp3-hd";
 
-// All 30 Gemini 2.5 Pro voices
 const VOICES_GEMINI = [
   { name: "Zephyr", desc: "Bright" },
   { name: "Puck", desc: "Upbeat" },
@@ -68,7 +67,6 @@ const VOICES_GEMINI = [
   { name: "Sulafat", desc: "Warm" },
 ] as const;
 
-// Chirp 3 HD voices
 const VOICES_CHIRP = [
   { name: "en-US-Chirp3-HD-Charon", desc: "English" },
   { name: "en-US-Chirp3-HD-Kore", desc: "English" },
@@ -76,7 +74,6 @@ const VOICES_CHIRP = [
   { name: "hi-IN-Chirp3-HD-Kore", desc: "Hindi" },
 ] as const;
 
-// Language options
 const LANGUAGES = [
   { code: "en-US", name: "English" },
   { code: "hi-IN", name: "Hindi" },
@@ -107,12 +104,8 @@ type Clip = {
 };
 
 function formatTime(ts: number) {
-  const d = new Date(ts);
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
+  return new Date(ts).toLocaleString(undefined, {
+    month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit",
   });
 }
 
@@ -138,7 +131,7 @@ function loadLibraryFromStorage(): Clip[] {
     const data = localStorage.getItem(STORAGE_KEY);
     if (data) return JSON.parse(data);
   } catch (e) {
-    console.error("Failed to load library:", e);
+    console.error("Load failed:", e);
   }
   return [];
 }
@@ -147,12 +140,12 @@ function saveLibraryToStorage(clips: Clip[]) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(clips));
   } catch (e) {
-    console.error("Failed to save library:", e);
+    console.error("Save failed:", e);
   }
 }
 
 async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): Promise<{ audio: string; mimeType: string }> {
-  if (chunks.length === 0) throw new Error("No audio chunks");
+  if (chunks.length === 0) throw new Error("No chunks");
   if (chunks.length === 1) return chunks[0];
 
   const audioBuffers: ArrayBuffer[] = [];
@@ -168,8 +161,7 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
 
   for (const buffer of audioBuffers) {
     try {
-      const decoded = await audioContext.decodeAudioData(buffer.slice(0));
-      decodedBuffers.push(decoded);
+      decodedBuffers.push(await audioContext.decodeAudioData(buffer.slice(0)));
     } catch (e) {
       console.error("Decode error:", e);
     }
@@ -207,7 +199,6 @@ function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
 
   const buffer = new ArrayBuffer(totalSize);
   const view = new DataView(buffer);
-
   const writeStr = (o: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
 
   writeStr(0, "RIFF");
@@ -233,15 +224,9 @@ function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
       pos += 2;
     }
   }
-
   return buffer;
 }
 
-function buildDemoWavBase64() {
-  return "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
-}
-
-// Teleprompter Overlay
 function Teleprompter({ text, isPlaying, currentTime, duration, onClose }: {
   text: string; isPlaying: boolean; currentTime: number; duration: number; onClose: () => void;
 }) {
@@ -277,7 +262,6 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose }: {
             <Button variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button>
           </div>
         </div>
-
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="mx-auto max-w-2xl px-6 py-12">
             <div className="text-2xl leading-relaxed">
@@ -292,7 +276,6 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose }: {
             </div>
           </div>
         </ScrollArea>
-
         <div className="border-t px-4 py-3">
           <div className="flex items-center justify-between text-sm text-muted-foreground">
             <span>Word {highlightIndex + 1} / {words.length}</span>
@@ -309,7 +292,6 @@ export default function Home() {
   const { toast } = useToast();
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
-
   const [voice, setVoice] = useState<string>("Kore");
   const [language, setLanguage] = useState<string>("en-US");
   const [style, setStyle] = useState<string>("Warm, clear, confident");
@@ -321,7 +303,6 @@ export default function Home() {
   const [chunkProgress, setChunkProgress] = useState({ current: 0, total: 0 });
   const [isGenerating, setIsGenerating] = useState(false);
   const [clips, setClips] = useState<Clip[]>(() => loadLibraryFromStorage());
-
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [nowPlayingId, setNowPlayingId] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
@@ -343,6 +324,7 @@ export default function Home() {
     if (audio) { setCurrentTime(audio.currentTime); setDuration(audio.duration || 0); }
   }, []);
 
+  // Generate TTS - returns null if failed, no fake audio
   async function generateTTS(textContent: string): Promise<{ audio: string; mimeType: string } | null> {
     try {
       const endpoint = provider === "gemini" ? "/api/tts/gemini" : "/api/tts/chirp";
@@ -352,10 +334,26 @@ export default function Home() {
         body: JSON.stringify({ text: textContent, voice, language, style, pace, model: currentModel }),
       });
       const data = await response.json();
-      if (data.demo || data.error) return { audio: buildDemoWavBase64(), mimeType: "audio/wav" };
-      return { audio: data.audio, mimeType: data.mimeType };
-    } catch {
-      return { audio: buildDemoWavBase64(), mimeType: "audio/wav" };
+
+      // Check if it's an error or demo mode - don't save fake audio
+      if (data.demo || data.error || !data.audio) {
+        const errorMsg = data.error || "API key not configured";
+        toast({
+          title: "API Error",
+          description: errorMsg,
+          variant: "destructive"
+        });
+        return null;
+      }
+
+      return { audio: data.audio, mimeType: data.mimeType || "audio/wav" };
+    } catch (err) {
+      toast({
+        title: "Network Error",
+        description: "Could not connect to server",
+        variant: "destructive"
+      });
+      return null;
     }
   }
 
@@ -377,7 +375,11 @@ export default function Home() {
         for (let i = 0; i < chunks.length; i++) {
           setChunkProgress({ current: i + 1, total: chunks.length });
           const result = await generateTTS(chunks[i]);
-          if (result) audioChunks.push(result);
+          if (!result) {
+            setChunkProgress({ current: 0, total: 0 });
+            return; // Stop if any chunk fails
+          }
+          audioChunks.push(result);
           await new Promise(r => setTimeout(r, 300));
         }
 
@@ -390,15 +392,15 @@ export default function Home() {
         audioResult = await generateTTS(text);
       }
 
+      // Only save if we got real audio
       if (!audioResult) {
-        toast({ title: "Failed", description: "Could not generate audio.", variant: "destructive" });
         return;
       }
 
       const clip: Clip = {
         id: uid(),
         provider,
-        title: `${voice}`,
+        title: voice,
         createdAt: Date.now(),
         settings: { model: currentModel, voice, language, style, pace, multiSpeaker },
         text,
@@ -422,7 +424,6 @@ export default function Home() {
     if (!audio) return;
     const url = getAudioUrl(clip);
     if (!url) return;
-
     if (nowPlayingId === clip.id && !audio.paused) { audio.pause(); return; }
     audio.src = url;
     await audio.play();
@@ -452,51 +453,16 @@ export default function Home() {
     setClips(prev => prev.filter(c => c.id !== clipId));
   }
 
-  function openTeleprompter(clip: Clip) {
+  function handleOpenTeleprompter(clip: Clip) {
     setTeleprompterClip(clip);
     setShowTeleprompter(true);
     playClip(clip);
   }
 
-  // Render clip card
-  const ClipCard = ({ clip }: { clip: Clip }) => {
-    const isPlaying = nowPlayingId === clip.id;
-    return (
-      <Card className="bg-card/70">
-        <CardContent className="p-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium truncate">{clip.title}</span>
-                <Badge variant="outline" className="text-xs shrink-0">
-                  {clip.provider === "gemini" ? "Gemini" : "Chirp"}
-                </Badge>
-              </div>
-              <div className="text-xs text-muted-foreground mt-0.5">
-                {formatTime(clip.createdAt)} • {countWords(clip.text)} words
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              <Button size="icon" variant={isPlaying ? "default" : "ghost"} className="h-8 w-8"
-                onClick={() => playClip(clip)}>
-                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              </Button>
-              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openTeleprompter(clip)}>
-                <BookOpen className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => downloadClip(clip)}>
-                <Download className="h-4 w-4" />
-              </Button>
-              <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteClip(clip.id)}>
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{clip.text}</p>
-        </CardContent>
-      </Card>
-    );
-  };
+  function handleCloseTeleprompter() {
+    setShowTeleprompter(false);
+    setTeleprompterClip(null);
+  }
 
   return (
     <div className="min-h-screen w-full bg-background pb-20">
@@ -504,16 +470,20 @@ export default function Home() {
 
       <AnimatePresence>
         {showTeleprompter && teleprompterClip && (
-          <Teleprompter text={teleprompterClip.text} isPlaying={nowPlayingId === teleprompterClip.id}
-            currentTime={currentTime} duration={duration} onClose={() => setShowTeleprompter(false)} />
+          <Teleprompter
+            text={teleprompterClip.text}
+            isPlaying={nowPlayingId === teleprompterClip.id}
+            currentTime={currentTime}
+            duration={duration}
+            onClose={handleCloseTeleprompter}
+          />
         )}
       </AnimatePresence>
 
       <div className="mx-auto w-full max-w-md px-4 pt-4">
-        {/* Generator View */}
+        {/* GENERATOR VIEW */}
         {activeView === "generator" && (
           <div className="space-y-4">
-            {/* Provider Switch */}
             <Tabs value={provider} onValueChange={(v) => {
               const p = v as Provider;
               setProvider(p);
@@ -525,14 +495,11 @@ export default function Home() {
               </TabsList>
             </Tabs>
 
-            {/* Voice & Language */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs">Voice</Label>
                 <Select value={voice} onValueChange={setVoice}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {voicesForProvider.map((v) => (
                       <SelectItem key={v.name} value={v.name}>
@@ -542,13 +509,10 @@ export default function Home() {
                   </SelectContent>
                 </Select>
               </div>
-
               <div className="space-y-1.5">
                 <Label className="text-xs">Language</Label>
                 <Select value={language} onValueChange={setLanguage}>
-                  <SelectTrigger className="h-9">
-                    <SelectValue />
-                  </SelectTrigger>
+                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {LANGUAGES.map((l) => (
                       <SelectItem key={l.code} value={l.code}>{l.name}</SelectItem>
@@ -558,7 +522,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Text Input */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Script</Label>
@@ -568,7 +531,6 @@ export default function Home() {
                 className="min-h-36 resize-none" placeholder="Enter your text here..." />
             </div>
 
-            {/* Large Script Mode */}
             {needsChunking && (
               <div className="flex items-center justify-between rounded-lg border p-3">
                 <div className="flex items-center gap-2">
@@ -582,7 +544,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Advanced Settings */}
             <div className="flex items-center justify-between rounded-lg border p-3">
               <div className="flex items-center gap-2">
                 <Settings className="h-4 w-4 text-primary" />
@@ -613,7 +574,6 @@ export default function Home() {
               </motion.div>
             )}
 
-            {/* Progress */}
             {chunkProgress.total > 0 && (
               <div className="space-y-2">
                 <div className="flex justify-between text-sm">
@@ -624,7 +584,6 @@ export default function Home() {
               </div>
             )}
 
-            {/* Generate Button */}
             <Button className="w-full h-12 text-base" onClick={onGenerate} disabled={isGenerating}>
               {isGenerating ? (
                 <><Loader2 className="h-5 w-5 animate-spin mr-2" />Generating...</>
@@ -635,7 +594,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* Library View */}
+        {/* LIBRARY VIEW */}
         {activeView === "library" && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -655,13 +614,50 @@ export default function Home() {
               </div>
             ) : (
               <div className="space-y-2">
-                {clips.map(clip => <ClipCard key={clip.id} clip={clip} />)}
+                {clips.map(clip => {
+                  const isPlaying = nowPlayingId === clip.id;
+                  return (
+                    <Card key={clip.id} className="bg-card/70">
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium truncate">{clip.title}</span>
+                              <Badge variant="outline" className="text-xs shrink-0">
+                                {clip.provider === "gemini" ? "Gemini" : "Chirp"}
+                              </Badge>
+                            </div>
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              {formatTime(clip.createdAt)} • {countWords(clip.text)} words
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button size="icon" variant={isPlaying ? "default" : "ghost"} className="h-8 w-8"
+                              onClick={() => playClip(clip)}>
+                              {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenTeleprompter(clip)}>
+                              <BookOpen className="h-4 w-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => downloadClip(clip)}>
+                              <Download className="h-4 w-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteClip(clip.id)}>
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{clip.text}</p>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
-        {/* Teleprompter View */}
+        {/* TELEPROMPTER VIEW */}
         {activeView === "teleprompter" && (
           <div className="space-y-3">
             <h2 className="font-semibold">Teleprompter</h2>
@@ -677,7 +673,7 @@ export default function Home() {
               <div className="space-y-2">
                 {clips.map(clip => (
                   <Button key={clip.id} variant="outline" className="w-full justify-start h-auto py-3"
-                    onClick={() => openTeleprompter(clip)}>
+                    onClick={() => handleOpenTeleprompter(clip)}>
                     <Play className="h-5 w-5 mr-3 text-primary" />
                     <div className="text-left">
                       <div className="font-medium">{clip.title}</div>
@@ -693,7 +689,7 @@ export default function Home() {
         )}
       </div>
 
-      {/* Bottom Navigation */}
+      {/* BOTTOM NAVIGATION ONLY */}
       <div className="fixed inset-x-0 bottom-0 border-t bg-background/95 backdrop-blur">
         <div className="mx-auto max-w-md grid grid-cols-3 py-2">
           <button onClick={() => setActiveView("generator")}
@@ -702,11 +698,11 @@ export default function Home() {
             <span className="text-xs mt-1">Generate</span>
           </button>
           <button onClick={() => setActiveView("library")}
-            className={`flex flex-col items-center py-2 ${activeView === "library" ? "text-primary" : "text-muted-foreground"}`}>
+            className={`flex flex-col items-center py-2 relative ${activeView === "library" ? "text-primary" : "text-muted-foreground"}`}>
             <AudioLines className="h-5 w-5" />
             <span className="text-xs mt-1">Library</span>
             {clips.length > 0 && (
-              <span className="absolute -mt-1 ml-4 bg-primary text-primary-foreground text-xs rounded-full h-4 w-4 flex items-center justify-center">
+              <span className="absolute top-1 right-1/4 bg-primary text-primary-foreground text-xs rounded-full h-4 w-4 flex items-center justify-center">
                 {clips.length}
               </span>
             )}
