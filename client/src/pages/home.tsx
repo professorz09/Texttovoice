@@ -1470,7 +1470,9 @@ export default function Home() {
         
         let allTranscripts: WordTimestamp[] = [];
         
-        // Process each chunk
+        // Prepare all chunks first
+        const chunkPromises = [];
+        
         for (let i = 0; i < numChunks; i++) {
           const startTime = i * chunkDuration;
           const endTime = Math.min((i + 1) * chunkDuration, totalDuration);
@@ -1512,27 +1514,38 @@ export default function Home() {
           
           console.log(`Chunk ${i + 1}/${numChunks}: ${(uint8.length / 1024 / 1024).toFixed(2)}MB, Duration: ${(endTime - startTime).toFixed(1)}s`);
           
-          // Get transcript for this chunk
-          const chunkTranscript = await getTranscriptWithTimestamps(
-            apiKeys.gcloud,
-            base64,
-            clip.settings.language || "en-US",
-            "audio/wav"
+          // Create promise for this chunk
+          chunkPromises.push(
+            getTranscriptWithTimestamps(
+              apiKeys.gcloud,
+              base64,
+              clip.settings.language || "en-US",
+              "audio/wav"
+            ).then(chunkTranscript => ({
+              startTime,
+              transcript: chunkTranscript
+            }))
           );
-          
-          // Adjust timestamps by chunk start time
-          const adjustedTranscript = chunkTranscript.map(t => ({
+        }
+        
+        toast({ 
+          title: "Processing All Chunks", 
+          description: `Processing ${numChunks} chunks in parallel...`
+        });
+        
+        // Process all chunks in parallel
+        const results = await Promise.all(chunkPromises);
+        
+        // Sort by start time and merge transcripts
+        results.sort((a, b) => a.startTime - b.startTime);
+        
+        for (const result of results) {
+          const adjustedTranscript = result.transcript.map(t => ({
             ...t,
-            startTime: t.startTime + startTime,
-            endTime: t.endTime + startTime
+            startTime: t.startTime + result.startTime,
+            endTime: t.endTime + result.startTime
           }));
-          
           allTranscripts = [...allTranscripts, ...adjustedTranscript];
-          
-          toast({ 
-            title: `Processing Chunk ${i + 1}/${numChunks}`, 
-            description: `${Math.round((i + 1) / numChunks * 100)}% complete`
-          });
         }
         
         await audioContext.close();
