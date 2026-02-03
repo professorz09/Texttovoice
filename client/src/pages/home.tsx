@@ -864,10 +864,14 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-background flex flex-col">
+      className="fixed inset-0 z-50 bg-background flex flex-col"
+      style={{ 
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingBottom: 'env(safe-area-inset-bottom)'
+      }}>
       
       {/* Header */}
-      <div className="flex items-center justify-between border-b px-6 py-4 bg-background/95 backdrop-blur">
+      <div className="flex items-center justify-between border-b px-6 py-4 bg-background/95 backdrop-blur flex-shrink-0">
         <div className="flex items-center gap-3">
           <BookOpen className="h-5 w-5 text-primary" />
           <span className="font-semibold text-lg">Teleprompter</span>
@@ -904,9 +908,9 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
       </div>
 
       {/* Controls Footer */}
-      <div className="border-t bg-background/95 backdrop-blur">
+      <div className="border-t bg-background/95 backdrop-blur flex-shrink-0">
         {/* Playback Controls */}
-        <div className="px-6 py-4 space-y-4">
+        <div className="px-6 py-4 space-y-4" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
           <div className="flex items-center justify-center gap-3">
             <Button size="sm" variant="outline" onClick={() => handleSeek(-10)} className="w-16">-10s</Button>
             <Button size="sm" variant="outline" onClick={() => handleSeek(-5)} className="w-14">-5s</Button>
@@ -1450,10 +1454,10 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      <div className="mx-auto w-full max-w-md px-4 pt-4">
+      <div className="mx-auto w-full max-w-md px-4 pt-4 pb-4" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
         {/* GENERATOR VIEW */}
         {activeView === "generator" && (
-          <div className="space-y-4">
+          <div className="space-y-4 pb-20">
             <Tabs value={provider} onValueChange={(v) => {
               const p = v as Provider;
               setProvider(p);
@@ -1772,7 +1776,7 @@ export default function Home() {
 
         {/* LIBRARY VIEW */}
         {activeView === "library" && (
-          <div className="space-y-3">
+          <div className="space-y-3 pb-20">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div>
                 <h2 className="font-semibold">Library ({clips.length}/{MAX_CLIPS})</h2>
@@ -1916,7 +1920,7 @@ export default function Home() {
 
         {/* TELEPROMPTER VIEW */}
         {activeView === "teleprompter" && (
-          <div className="space-y-3">
+          <div className="space-y-3 pb-20">
             <h2 className="font-semibold">Teleprompter</h2>
             <p className="text-sm text-muted-foreground">
               Select a clip. Click <RefreshCw className="h-3 w-3 inline text-orange-500" /> to sync word timing.
@@ -1983,7 +1987,7 @@ export default function Home() {
 
         {/* SETTINGS VIEW */}
         {activeView === "settings" && (
-          <div className="space-y-4">
+          <div className="space-y-4 pb-20">
             {/* API Keys Section */}
             <h2 className="font-semibold">API Keys</h2>
             <Card>
