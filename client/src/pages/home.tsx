@@ -784,17 +784,24 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
   }, [currentTime, duration, words.length, transcript]);
 
   useEffect(() => {
-    if (!containerRef.current || isDragging || !localIsPlaying) return;
+    if (!containerRef.current || isDragging) return;
     
     const el = containerRef.current.querySelector(`[data-word-index="${highlightIndex}"]`);
     if (el) {
       const container = containerRef.current;
       const elRect = el.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
-      const offset = elRect.top - containerRect.top - containerRect.height / 2 + elRect.height / 2;
       
-      if (Math.abs(offset) > 5) {
-        container.scrollBy({ top: offset, behavior: 'smooth' });
+      // Keep current word in center of screen
+      const targetPosition = containerRect.height / 3; // Position at top third for better reading
+      const currentPosition = elRect.top - containerRect.top;
+      const offset = currentPosition - targetPosition;
+      
+      if (Math.abs(offset) > 10) {
+        container.scrollBy({ 
+          top: offset, 
+          behavior: localIsPlaying ? 'smooth' : 'auto' 
+        });
       }
     }
   }, [highlightIndex, isDragging, localIsPlaying]);
@@ -863,13 +870,13 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
         onMouseUp={() => setIsDragging(false)}
         onMouseLeave={() => setIsDragging(false)}
       >
-        <div className="mx-auto max-w-3xl px-8 py-20">
-          <div style={{ fontSize: `${localFontSize}px`, lineHeight: 1.8 }}>
+        <div className="mx-auto max-w-4xl px-8 py-32 pb-64">
+          <div style={{ fontSize: `${localFontSize}px`, lineHeight: 2.2, letterSpacing: '0.02em' }}>
             {words.map((word, i) => (
               <span key={i} data-word-index={i}
-                className={`inline-block px-1 py-0.5 transition-all duration-200 ${
+                className={`inline-block px-1 py-0.5 transition-all duration-300 ${
                   i === highlightIndex 
-                    ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold scale-110 shadow-lg rounded px-2" 
+                    ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold scale-110 shadow-2xl rounded-lg px-3 py-1" 
                     : i < highlightIndex 
                     ? "text-gray-400 dark:text-gray-600" 
                     : "text-gray-900 dark:text-gray-100"
