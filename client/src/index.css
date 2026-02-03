@@ -7,11 +7,48 @@ body {
   background-color: #f0f0f0;
   color: #333;
   font-family: system-ui, -apple-system, sans-serif;
+  /* Mobile optimizations */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
 }
 
 #root {
   min-height: 100vh;
   padding: 20px;
+}
+
+/* Mobile-specific optimizations */
+@media (max-width: 768px) {
+  #root {
+    padding: 12px;
+  }
+  
+  /* Larger touch targets */
+  button, a, input, select, textarea {
+    min-height: 44px;
+  }
+  
+  /* Prevent zoom on input focus */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+  
+  /* Smooth scrolling */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Touch-friendly interactions */
+.touch-manipulation {
+  touch-action: manipulation;
+}
+
+/* Prevent text selection on buttons */
+button {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 @theme inline {

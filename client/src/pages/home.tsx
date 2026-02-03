@@ -286,10 +286,21 @@ function splitTextIntoChunks(text: string, maxWords: number): string[] {
   return chunks.filter(c => c.trim().length > 0);
 }
 
+// Storage limits
+const MAX_CLIPS = 100;
+const MAX_STORAGE_MB = 50;
+
 function loadLibraryFromStorage(): Clip[] {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
-    if (data) return JSON.parse(data);
+    if (data) {
+      const clips = JSON.parse(data);
+      // Auto-cleanup if exceeds limit
+      if (clips.length > MAX_CLIPS) {
+        return clips.slice(0, MAX_CLIPS);
+      }
+      return clips;
+    }
   } catch (e) {
     console.error("Load failed:", e);
   }
@@ -298,9 +309,35 @@ function loadLibraryFromStorage(): Clip[] {
 
 function saveLibraryToStorage(clips: Clip[]) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(clips));
+    // Enforce max clips limit
+    let clipsToSave = clips;
+    if (clips.length > MAX_CLIPS) {
+      clipsToSave = clips.slice(0, MAX_CLIPS);
+    }
+    
+    const dataStr = JSON.stringify(clipsToSave);
+    const sizeInMB = new Blob([dataStr]).size / (1024 * 1024);
+    
+    // Check storage size
+    if (sizeInMB > MAX_STORAGE_MB) {
+      // Remove oldest clips until under limit
+      while (clipsToSave.length > 0 && new Blob([JSON.stringify(clipsToSave)]).size / (1024 * 1024) > MAX_STORAGE_MB) {
+        clipsToSave = clipsToSave.slice(0, -1);
+      }
+    }
+    
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clipsToSave));
   } catch (e) {
     console.error("Save failed:", e);
+    // If quota exceeded, try removing oldest clips
+    if (e instanceof DOMException && e.name === 'QuotaExceededError') {
+      try {
+        const reducedClips = clips.slice(0, Math.floor(clips.length / 2));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(reducedClips));
+      } catch (retryError) {
+        console.error("Retry save failed:", retryError);
+      }
+    }
   }
 }
 
@@ -1379,19 +1416,19 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-background pb-20">
+    <div className="min-h-screen w-full bg-background pb-20 touch-manipulation">
       {/* Dark Mode Toggle */}
       <div className="fixed top-4 right-4 z-40">
         <Button
           variant="ghost"
           size="icon"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          className="h-8 w-8 rounded-full"
+          className="h-10 w-10 rounded-full touch-manipulation active:scale-95 transition-transform"
         >
           {theme === "dark" ? (
-            <Sun className="h-4 w-4" />
+            <Sun className="h-5 w-5" />
           ) : (
-            <Moon className="h-4 w-4" />
+            <Moon className="h-5 w-5" />
           )}
         </Button>
       </div>
@@ -1736,10 +1773,18 @@ export default function Home() {
         {/* LIBRARY VIEW */}
         {activeView === "library" && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Library ({clips.length})</h2>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h2 className="font-semibold">Library ({clips.length}/{MAX_CLIPS})</h2>
+                <p className="text-xs text-muted-foreground">
+                  {(() => {
+                    const sizeInMB = new Blob([JSON.stringify(clips)]).size / (1024 * 1024);
+                    return `${sizeInMB.toFixed(1)}MB / ${MAX_STORAGE_MB}MB used`;
+                  })()}
+                </p>
+              </div>
               <label htmlFor="file-upload">
-                <Button variant="outline" size="sm" asChild>
+                <Button variant="outline" size="sm" asChild disabled={clips.length >= MAX_CLIPS}>
                   <span className="cursor-pointer">
                     <Upload className="h-4 w-4 mr-2" />
                     Upload
@@ -1754,6 +1799,18 @@ export default function Home() {
                 />
               </label>
             </div>
+
+            {clips.length >= MAX_CLIPS && (
+              <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg p-3">
+                <div className="flex gap-2">
+                  <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-yellow-800 dark:text-yellow-200">
+                    <p className="font-medium">Storage limit reached</p>
+                    <p className="text-xs mt-1">Delete old clips to add new ones. Oldest clips auto-delete when limit exceeded.</p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {clips.length === 0 ? (
               <div className="text-center py-12">
