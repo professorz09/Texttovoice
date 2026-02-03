@@ -6,6 +6,7 @@ import {
   Check,
   ChevronDown,
   Download,
+  Edit2,
   FileText,
   Loader2,
   Mic,
@@ -1007,6 +1008,8 @@ export default function Home() {
   const [duration, setDuration] = useState(0);
   const [teleprompterClip, setTeleprompterClip] = useState<Clip | null>(null);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
+  const [editingClipId, setEditingClipId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState<string>("");
   const [apiKeys, setApiKeys] = useState<ApiKeys>(() => loadApiKeys());
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [chunkStatuses, setChunkStatuses] = useState<ChunkStatus[]>([]);
@@ -1415,6 +1418,31 @@ export default function Home() {
       
       toast({ title: "Transcript Downloaded", description: `${clip.title}-transcript.txt` });
     }
+  }
+
+  function startEditingTitle(clip: Clip) {
+    setEditingClipId(clip.id);
+    setEditingTitle(clip.title);
+  }
+
+  function saveTitle(clipId: string) {
+    if (!editingTitle.trim()) {
+      toast({ title: "Invalid Name", description: "Title cannot be empty", variant: "destructive" });
+      return;
+    }
+    
+    setClips(prev => prev.map(c => 
+      c.id === clipId ? { ...c, title: editingTitle.trim() } : c
+    ));
+    
+    setEditingClipId(null);
+    setEditingTitle("");
+    toast({ title: "Title Updated", description: "Audio file renamed successfully" });
+  }
+
+  function cancelEditing() {
+    setEditingClipId(null);
+    setEditingTitle("");
   }
 
   function deleteClip(clipId: string) {
@@ -1927,8 +1955,39 @@ export default function Home() {
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
-                                <span className="font-medium truncate">{clip.title}</span>
-                                {!isGrouped && (
+                                {editingClipId === clip.id ? (
+                                  <div className="flex items-center gap-2 flex-1">
+                                    <Input
+                                      value={editingTitle}
+                                      onChange={(e) => setEditingTitle(e.target.value)}
+                                      className="h-8 text-sm"
+                                      autoFocus
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter') saveTitle(clip.id);
+                                        if (e.key === 'Escape') cancelEditing();
+                                      }}
+                                    />
+                                    <Button size="icon" variant="ghost" className="h-8 w-8 text-green-600" onClick={() => saveTitle(clip.id)}>
+                                      <Check className="h-4 w-4" />
+                                    </Button>
+                                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={cancelEditing}>
+                                      <X className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <span className="font-medium truncate">{clip.title}</span>
+                                    <Button 
+                                      size="icon" 
+                                      variant="ghost" 
+                                      className="h-6 w-6 shrink-0" 
+                                      onClick={() => startEditingTitle(clip)}
+                                    >
+                                      <Edit2 className="h-3 w-3" />
+                                    </Button>
+                                  </>
+                                )}
+                                {!isGrouped && editingClipId !== clip.id && (
                                   <Badge variant="outline" className="text-xs shrink-0">
                                     {clip.provider === "gemini" ? "Gemini" : "Chirp"}
                                   </Badge>
