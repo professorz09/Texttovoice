@@ -1443,7 +1443,7 @@ export default function Home() {
     
     try {
       const sizeBytes = (clip.audioData.length * 3) / 4;
-      const maxChunkSize = 8000000; // 8MB to be safe (leaves room for API overhead)
+      const maxChunkSize = 5000000; // 5MB to account for WAV header overhead
       
       // If audio is larger than 10MB, split into chunks
       if (sizeBytes > 10000000) {
@@ -1497,13 +1497,21 @@ export default function Home() {
           // Encode chunk to WAV
           const wavData = encodeWAV(chunkBuffer);
           const uint8 = new Uint8Array(wavData);
+          
+          // Check if chunk is still too large
+          if (uint8.length > 10000000) {
+            throw new Error(`Chunk ${i + 1} is still too large (${(uint8.length / 1024 / 1024).toFixed(1)}MB). Try generating shorter audio clips.`);
+          }
+          
           let base64 = '';
-          const chunkSize = 8192;
-          for (let j = 0; j < uint8.length; j += chunkSize) {
-            const chunk = uint8.subarray(j, Math.min(j + chunkSize, uint8.length));
+          const encodeChunkSize = 8192;
+          for (let j = 0; j < uint8.length; j += encodeChunkSize) {
+            const chunk = uint8.subarray(j, Math.min(j + encodeChunkSize, uint8.length));
             base64 += String.fromCharCode(...chunk);
           }
           base64 = btoa(base64);
+          
+          console.log(`Chunk ${i + 1}/${numChunks}: ${(uint8.length / 1024 / 1024).toFixed(2)}MB, Duration: ${(endTime - startTime).toFixed(1)}s`);
           
           // Get transcript for this chunk
           const chunkTranscript = await getTranscriptWithTimestamps(
