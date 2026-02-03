@@ -40,6 +40,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useTheme } from "next-themes";
+import { Capacitor } from "@capacitor/core";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 
 // API Keys storage
 const API_KEYS_STORAGE = "voiceforge_api_keys";
@@ -1303,16 +1306,61 @@ export default function Home() {
     e.target.value = '';
   }
 
-  function downloadClip(clip: Clip) {
+  async function downloadClip(clip: Clip) {
     const url = getAudioUrl(clip);
     if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${clip.title}-${clip.id}.wav`;
-    a.click();
+
+    // Check if running on mobile
+    if (Capacitor.isNativePlatform()) {
+      try {
+        // Convert blob URL to base64
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const reader = new FileReader();
+        
+        reader.onloadend = async () => {
+          const base64Data = (reader.result as string).split(',')[1];
+          const fileName = `${clip.title}-${clip.id}.wav`;
+          
+          // Save to device
+          const result = await Filesystem.writeFile({
+            path: fileName,
+            data: base64Data,
+            directory: Directory.Documents
+          });
+
+          // Share the file
+          await Share.share({
+            title: clip.title,
+            text: `Audio: ${clip.title}`,
+            url: result.uri,
+            dialogTitle: 'Save Audio'
+          });
+
+          toast({ 
+            title: "Audio Saved!", 
+            description: `Saved to Documents/${fileName}` 
+          });
+        };
+        
+        reader.readAsDataURL(blob);
+      } catch (error: any) {
+        toast({ 
+          title: "Download Failed", 
+          description: error.message, 
+          variant: "destructive" 
+        });
+      }
+    } else {
+      // Web browser download
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${clip.title}-${clip.id}.wav`;
+      a.click();
+    }
   }
 
-  function downloadTranscript(clip: Clip) {
+  async function downloadTranscript(clip: Clip) {
     if (!clip.transcript || clip.transcript.length === 0) {
       toast({ title: "No Transcript", description: "Generate transcript first by clicking the sync button", variant: "destructive" });
       return;
@@ -1321,18 +1369,52 @@ export default function Home() {
     const transcriptText = clip.transcript.map(t => 
       `${t.startTime.toFixed(2)}s - ${t.endTime.toFixed(2)}s: ${t.word}`
     ).join('\n');
-    
-    const blob = new Blob([transcriptText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${clip.title}-transcript.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    toast({ title: "Transcript Downloaded", description: `${clip.title}-transcript.txt` });
+
+    // Check if running on mobile
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const fileName = `${clip.title}-transcript.txt`;
+        
+        // Save to device
+        const result = await Filesystem.writeFile({
+          path: fileName,
+          data: transcriptText,
+          directory: Directory.Documents,
+          encoding: 'utf8'
+        });
+
+        // Share the file
+        await Share.share({
+          title: `${clip.title} Transcript`,
+          text: transcriptText,
+          dialogTitle: 'Save Transcript'
+        });
+
+        toast({ 
+          title: "Transcript Saved!", 
+          description: `Saved to Documents/${fileName}` 
+        });
+      } catch (error: any) {
+        toast({ 
+          title: "Download Failed", 
+          description: error.message, 
+          variant: "destructive" 
+        });
+      }
+    } else {
+      // Web browser download
+      const blob = new Blob([transcriptText], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${clip.title}-transcript.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      toast({ title: "Transcript Downloaded", description: `${clip.title}-transcript.txt` });
+    }
   }
 
   function deleteClip(clipId: string) {
