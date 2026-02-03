@@ -1416,9 +1416,9 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-background pb-20 touch-manipulation">
+    <div className="min-h-screen w-full bg-background touch-manipulation" style={{ paddingBottom: 'calc(80px + env(safe-area-inset-bottom))' }}>
       {/* Dark Mode Toggle */}
-      <div className="fixed top-4 right-4 z-40">
+      <div className="fixed top-4 right-4 z-40" style={{ top: 'calc(1rem + env(safe-area-inset-top))' }}>
         <Button
           variant="ghost"
           size="icon"
@@ -2121,15 +2121,15 @@ export default function Home() {
       </div>
 
       {/* BOTTOM NAVIGATION */}
-      <div className="fixed inset-x-0 bottom-0 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto max-w-md grid grid-cols-4 py-2">
+      <div className="fixed inset-x-0 bottom-0 border-t bg-background/95 backdrop-blur" style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="mx-auto max-w-md grid grid-cols-4 py-2 pb-safe">
           <button onClick={() => setActiveView("generator")}
-            className={`flex flex-col items-center py-2 ${activeView === "generator" ? "text-primary" : "text-muted-foreground"}`}>
+            className={`flex flex-col items-center py-2 touch-manipulation ${activeView === "generator" ? "text-primary" : "text-muted-foreground"}`}>
             <Wand2 className="h-5 w-5" />
             <span className="text-xs mt-1">Generate</span>
           </button>
           <button onClick={() => setActiveView("library")}
-            className={`flex flex-col items-center py-2 relative ${activeView === "library" ? "text-primary" : "text-muted-foreground"}`}>
+            className={`flex flex-col items-center py-2 relative touch-manipulation ${activeView === "library" ? "text-primary" : "text-muted-foreground"}`}>
             <AudioLines className="h-5 w-5" />
             <span className="text-xs mt-1">Library</span>
             {clips.length > 0 && (
@@ -2139,12 +2139,12 @@ export default function Home() {
             )}
           </button>
           <button onClick={() => setActiveView("teleprompter")}
-            className={`flex flex-col items-center py-2 ${activeView === "teleprompter" ? "text-primary" : "text-muted-foreground"}`}>
+            className={`flex flex-col items-center py-2 touch-manipulation ${activeView === "teleprompter" ? "text-primary" : "text-muted-foreground"}`}>
             <BookOpen className="h-5 w-5" />
             <span className="text-xs mt-1">Teleprompter</span>
           </button>
           <button onClick={() => setActiveView("settings")}
-            className={`flex flex-col items-center py-2 relative ${activeView === "settings" ? "text-primary" : "text-muted-foreground"}`}>
+            className={`flex flex-col items-center py-2 relative touch-manipulation ${activeView === "settings" ? "text-primary" : "text-muted-foreground"}`}>
             <Key className="h-5 w-5" />
             <span className="text-xs mt-1">Settings</span>
             {(!apiKeys.gemini || !apiKeys.gcloud) && (
