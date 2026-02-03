@@ -9,11 +9,13 @@ import {
   FileText,
   Loader2,
   Mic,
+  Moon,
   Pause,
   Play,
   RefreshCw,
   Settings,
   Split,
+  Sun,
   ToggleLeft,
   ToggleRight,
   Trash2,
@@ -21,6 +23,7 @@ import {
   X,
   AlertCircle,
   Key,
+  Upload,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -36,6 +39,7 @@ import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { useTheme } from "next-themes";
 
 // API Keys storage
 const API_KEYS_STORAGE = "voiceforge_api_keys";
@@ -193,6 +197,8 @@ type Clip = {
   audioData?: string;
   mimeType?: string;
   transcript?: WordTimestamp[]; // word-level timestamps from Speech-to-Text
+  groupId?: string; // For grouping related clips
+  partNumber?: number; // Part number in group
 };
 
 function formatTime(ts: number) {
@@ -556,8 +562,19 @@ async function callChirpTTS(
 async function getTranscriptWithTimestamps(
   apiKey: string,
   audioBase64: string,
-  languageCode: string
+  languageCode: string,
+  mimeType?: string
 ): Promise<WordTimestamp[]> {
+  // Detect encoding from mimeType or default to LINEAR16 for WAV
+  let encoding = "LINEAR16";
+  let sampleRateHertz = 24000;
+  
+  if (mimeType?.includes("mp3")) {
+    encoding = "MP3";
+  } else if (mimeType?.includes("wav")) {
+    encoding = "LINEAR16";
+  }
+
   const response = await fetch(
     `https://speech.googleapis.com/v1/speech:recognize`,
     {
@@ -568,11 +585,12 @@ async function getTranscriptWithTimestamps(
       },
       body: JSON.stringify({
         config: {
-          encoding: "LINEAR16",
-          sampleRateHertz: 24000,
-          languageCode: languageCode,
+          encoding,
+          sampleRateHertz,
+          languageCode,
           enableWordTimeOffsets: true,
-          model: "default"
+          model: "latest_long",
+          enableAutomaticPunctuation: true
         },
         audio: {
           content: audioBase64
@@ -589,7 +607,7 @@ async function getTranscriptWithTimestamps(
   const data = await response.json();
   const timestamps: WordTimestamp[] = [];
 
-  if (data.results) {
+  if (data.results && data.results.length > 0) {
     for (const result of data.results) {
       if (result.alternatives?.[0]?.words) {
         for (const wordInfo of result.alternatives[0].words) {
@@ -610,43 +628,51 @@ async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): 
   if (chunks.length === 0) throw new Error("No chunks");
   if (chunks.length === 1) return chunks[0];
 
-  const audioBuffers: ArrayBuffer[] = [];
-  for (const chunk of chunks) {
-    const binary = atob(chunk.audio);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    audioBuffers.push(bytes.buffer);
-  }
-
   const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
   const decodedBuffers: AudioBuffer[] = [];
 
-  for (const buffer of audioBuffers) {
-    try {
-      decodedBuffers.push(await audioContext.decodeAudioData(buffer.slice(0)));
-    } catch (e) {
-      console.error("Decode error:", e);
+  // Decode all chunks sequentially
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    const binary = atob(chunk.audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let j = 0; j < binary.length; j++) {
+      bytes[j] = binary.charCodeAt(j);
     }
+    const audioBuffer = await audioContext.decodeAudioData(bytes.buffer.slice(0));
+    decodedBuffers.push(audioBuffer);
   }
 
-  if (decodedBuffers.length === 0) throw new Error("Decode failed");
-
-  const totalLength = decodedBuffers.reduce((sum, buf) => sum + buf.length, 0);
+  // Use first buffer's properties
   const { numberOfChannels, sampleRate } = decodedBuffers[0];
+  const totalLength = decodedBuffers.reduce((sum, buf) => sum + buf.length, 0);
+  
+  // Create merged buffer
   const mergedBuffer = audioContext.createBuffer(numberOfChannels, totalLength, sampleRate);
 
+  // Copy all channels for each buffer
   let offset = 0;
   for (const buffer of decodedBuffers) {
-    for (let ch = 0; ch < numberOfChannels; ch++) {
-      mergedBuffer.getChannelData(ch).set(buffer.getChannelData(ch), offset);
+    for (let channel = 0; channel < numberOfChannels; channel++) {
+      mergedBuffer.getChannelData(channel).set(buffer.getChannelData(channel), offset);
     }
     offset += buffer.length;
   }
 
+  // Encode to WAV
   const wavData = encodeWAV(mergedBuffer);
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(wavData)));
+  const uint8 = new Uint8Array(wavData);
+  
+  // Convert to base64 in chunks to avoid stack overflow
+  let base64 = '';
+  const chunkSize = 8192;
+  for (let i = 0; i < uint8.length; i += chunkSize) {
+    const chunk = uint8.subarray(i, Math.min(i + chunkSize, uint8.length));
+    base64 += String.fromCharCode(...chunk);
+  }
+  base64 = btoa(base64);
+  
   await audioContext.close();
-
   return { audio: base64, mimeType: "audio/wav" };
 }
 
@@ -693,10 +719,39 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
   text: string; isPlaying: boolean; currentTime: number; duration: number; onClose: () => void;
   fontSize: number; scrollSpeed: number; transcript?: WordTimestamp[];
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [highlightIndex, setHighlightIndex] = useState(0);
+  const [localFontSize, setLocalFontSize] = useState(fontSize);
+  const [localSpeed, setLocalSpeed] = useState(scrollSpeed);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [localIsPlaying, setLocalIsPlaying] = useState(false);
 
-  // Use transcript words if available, otherwise split text
+  useEffect(() => {
+    audioRef.current = document.querySelector('audio');
+    if (audioRef.current) {
+      const audio = audioRef.current;
+      const handlePlay = () => setLocalIsPlaying(true);
+      const handlePause = () => setLocalIsPlaying(false);
+      
+      audio.addEventListener('play', handlePlay);
+      audio.addEventListener('pause', handlePause);
+      
+      setLocalIsPlaying(!audio.paused);
+      
+      return () => {
+        audio.removeEventListener('play', handlePlay);
+        audio.removeEventListener('pause', handlePause);
+      };
+    }
+  }, []);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = localSpeed;
+    }
+  }, [localSpeed]);
+
   const words = useMemo(() => {
     if (transcript && transcript.length > 0) {
       return transcript.map(t => t.word);
@@ -704,12 +759,8 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
     return text.split(/\s+/).filter(Boolean);
   }, [text, transcript]);
 
-  // Calculate highlight index based on transcript timestamps or estimated timing
   useEffect(() => {
-    if (!isPlaying) return;
-
     if (transcript && transcript.length > 0) {
-      // Use precise timestamps from transcript
       const idx = transcript.findIndex(t => currentTime >= t.startTime && currentTime < t.endTime);
       if (idx >= 0) {
         setHighlightIndex(idx);
@@ -717,53 +768,172 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
         setHighlightIndex(transcript.length - 1);
       }
     } else if (duration > 0) {
-      // Fallback: estimate based on duration
-      const wordsPerSecond = (words.length / duration) * scrollSpeed;
-      setHighlightIndex(Math.min(Math.floor(currentTime * wordsPerSecond), words.length - 1));
+      const progress = currentTime / duration;
+      setHighlightIndex(Math.min(Math.floor(progress * words.length), words.length - 1));
     }
-  }, [currentTime, isPlaying, duration, scrollSpeed, words.length, transcript]);
+  }, [currentTime, duration, words.length, transcript]);
 
   useEffect(() => {
-    if (scrollRef.current && isPlaying) {
-      const el = scrollRef.current.querySelector(`[data-word-index="${highlightIndex}"]`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!containerRef.current || isDragging || !localIsPlaying) return;
+    
+    const el = containerRef.current.querySelector(`[data-word-index="${highlightIndex}"]`);
+    if (el) {
+      const container = containerRef.current;
+      const elRect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const offset = elRect.top - containerRect.top - containerRect.height / 2 + elRect.height / 2;
+      
+      if (Math.abs(offset) > 5) {
+        container.scrollBy({ top: offset, behavior: 'smooth' });
+      }
     }
-  }, [highlightIndex, isPlaying]);
+  }, [highlightIndex, isDragging, localIsPlaying]);
+
+  const handlePlayPause = async () => {
+    if (audioRef.current) {
+      try {
+        if (audioRef.current.paused) {
+          await audioRef.current.play();
+        } else {
+          audioRef.current.pause();
+        }
+      } catch (err) {
+        console.error('Playback error:', err);
+      }
+    }
+  };
+
+  const handleSeek = (seconds: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = Math.max(0, Math.min(audioRef.current.currentTime + seconds, duration));
+    }
+  };
+
+  const handleSeekTo = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = parseFloat(e.target.value);
+    }
+  };
+
+  const handleSpeedChange = (speed: number) => {
+    setLocalSpeed(speed);
+  };
+
+  const formatTimeDisplay = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm">
-      <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-2">
-            <BookOpen className="h-5 w-5 text-primary" />
-            <span className="font-semibold">Teleprompter</span>
-          </div>
-          <div className="flex items-center gap-3">
-            {transcript && <Badge variant="outline" className="text-xs">Synced</Badge>}
-            {isPlaying && <Badge variant="secondary" className="animate-pulse">Playing</Badge>}
-            <Button variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button>
+      className="fixed inset-0 z-50 bg-background flex flex-col">
+      
+      {/* Header */}
+      <div className="flex items-center justify-between border-b px-6 py-4 bg-background/95 backdrop-blur">
+        <div className="flex items-center gap-3">
+          <BookOpen className="h-5 w-5 text-primary" />
+          <span className="font-semibold text-lg">Teleprompter</span>
+          {transcript && <Badge variant="secondary" className="text-xs">Synced</Badge>}
+        </div>
+        <Button variant="ghost" size="icon" onClick={onClose}>
+          <X className="h-5 w-5" />
+        </Button>
+      </div>
+
+      {/* Text Display */}
+      <div 
+        ref={containerRef}
+        className="flex-1 overflow-y-auto scroll-smooth"
+        onMouseDown={() => setIsDragging(true)}
+        onMouseUp={() => setIsDragging(false)}
+        onMouseLeave={() => setIsDragging(false)}
+      >
+        <div className="mx-auto max-w-3xl px-8 py-20">
+          <div style={{ fontSize: `${localFontSize}px`, lineHeight: 1.8 }}>
+            {words.map((word, i) => (
+              <span key={i} data-word-index={i}
+                className={`inline-block px-1 py-0.5 transition-all duration-200 ${
+                  i === highlightIndex 
+                    ? "bg-primary text-primary-foreground font-bold scale-110 shadow-lg rounded px-2" 
+                    : i < highlightIndex 
+                    ? "text-muted-foreground/30" 
+                    : "text-foreground"
+                }`}
+              >{word} </span>
+            ))}
           </div>
         </div>
-        <ScrollArea className="flex-1" ref={scrollRef}>
-          <div className="mx-auto max-w-2xl px-6 py-12">
-            <div style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}>
-              {words.map((word, i) => (
-                <span key={i} data-word-index={i}
-                  className={`inline-block px-1 py-0.5 transition-all ${
-                    i < highlightIndex ? "text-muted-foreground/40"
-                    : i === highlightIndex ? "rounded bg-primary/20 text-primary font-semibold scale-105"
-                    : i <= highlightIndex + 10 ? "text-foreground" : "text-foreground/60"
-                  }`}>{word} </span>
-              ))}
+      </div>
+
+      {/* Controls Footer */}
+      <div className="border-t bg-background/95 backdrop-blur">
+        {/* Playback Controls */}
+        <div className="px-6 py-4 space-y-4">
+          <div className="flex items-center justify-center gap-3">
+            <Button size="sm" variant="outline" onClick={() => handleSeek(-10)} className="w-16">-10s</Button>
+            <Button size="sm" variant="outline" onClick={() => handleSeek(-5)} className="w-14">-5s</Button>
+            <Button size="lg" onClick={handlePlayPause} className="w-20 h-12">
+              {localIsPlaying ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6" />}
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => handleSeek(5)} className="w-14">+5s</Button>
+            <Button size="sm" variant="outline" onClick={() => handleSeek(10)} className="w-16">+10s</Button>
+          </div>
+
+          {/* Timeline */}
+          <div className="space-y-2">
+            <input
+              type="range"
+              min="0"
+              max={duration || 100}
+              step="0.1"
+              value={currentTime}
+              onChange={handleSeekTo}
+              onMouseDown={() => setIsDragging(true)}
+              onMouseUp={() => setIsDragging(false)}
+              className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(currentTime / (duration || 1)) * 100}%, hsl(var(--muted)) ${(currentTime / (duration || 1)) * 100}%, hsl(var(--muted)) 100%)`
+              }}
+            />
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-muted-foreground font-mono">{formatTimeDisplay(currentTime)}</span>
+              <span className="text-xs text-muted-foreground">Word {highlightIndex + 1} / {words.length}</span>
+              <span className="text-muted-foreground font-mono">{formatTimeDisplay(duration)}</span>
             </div>
           </div>
-        </ScrollArea>
-        <div className="border-t px-4 py-3">
-          <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>Word {highlightIndex + 1} / {words.length}</span>
-            <Progress value={(highlightIndex / words.length) * 100} className="w-40" />
-            <span>{Math.round((highlightIndex / words.length) * 100)}%</span>
+
+          {/* Settings Row */}
+          <div className="grid grid-cols-2 gap-4">
+            <div className="flex items-center gap-3">
+              <Label className="text-sm font-medium whitespace-nowrap">Size</Label>
+              <input
+                type="range"
+                min="16"
+                max="64"
+                value={localFontSize}
+                onChange={(e) => setLocalFontSize(parseInt(e.target.value))}
+                className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0"
+              />
+              <span className="text-sm text-muted-foreground w-12 text-right font-mono">{localFontSize}px</span>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <Label className="text-sm font-medium whitespace-nowrap">Speed</Label>
+              <div className="flex gap-1">
+                {[0.5, 0.75, 1, 1.25, 1.5, 2].map(speed => (
+                  <Button
+                    key={speed}
+                    size="sm"
+                    variant={localSpeed === speed ? "default" : "outline"}
+                    onClick={() => handleSpeedChange(speed)}
+                    className="h-8 px-2 text-xs"
+                  >
+                    {speed}x
+                  </Button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -773,6 +943,7 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
 
 export default function Home() {
   const { toast } = useToast();
+  const { theme, setTheme } = useTheme();
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
   const [voice, setVoice] = useState<string>("Zubenelgenubi");
@@ -901,17 +1072,16 @@ export default function Home() {
 
     setIsGenerating(true);
     try {
-      const audioChunks = chunkStatuses.map(s => s.audio!);
+      // Sort chunks by index to ensure correct order
+      const sortedChunks = [...chunkStatuses].sort((a, b) => a.index - b.index);
+      const audioChunks = sortedChunks.map(s => s.audio!);
+      const fullText = sortedChunks.map(s => s.text).join("\n\n");
       let audioResult: { audio: string; mimeType: string };
 
       if (audioChunks.length === 1) {
         audioResult = audioChunks[0];
       } else {
-        try {
-          audioResult = await mergeAudioChunks(audioChunks);
-        } catch {
-          audioResult = audioChunks[audioChunks.length - 1];
-        }
+        audioResult = await mergeAudioChunks(audioChunks);
       }
 
       const clip: Clip = {
@@ -920,7 +1090,7 @@ export default function Home() {
         title: currentVoice,
         createdAt: Date.now(),
         settings: { model: currentModel, voice: currentVoice, language, style, pace, multiSpeaker },
-        text,
+        text: fullText,
         audioData: audioResult.audio,
         mimeType: audioResult.mimeType,
       };
@@ -929,9 +1099,45 @@ export default function Home() {
       toast({ title: "Saved!", description: "Audio merged and saved to library." });
       setShowProcessingPanel(false);
       setChunkStatuses([]);
+    } catch (err: any) {
+      console.error("Merge error:", err);
+      toast({ title: "Merge Failed", description: err.message || "Failed to merge audio chunks", variant: "destructive" });
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  // Save without merging - saves all chunks separately
+  async function saveWithoutMerge() {
+    const completedChunks = [...chunkStatuses]
+      .filter(s => s.status === "completed" && s.audio)
+      .sort((a, b) => a.index - b.index);
+    
+    if (completedChunks.length === 0) {
+      toast({ title: "Error", description: "No completed chunks to save.", variant: "destructive" });
+      return;
+    }
+
+    const groupId = uid();
+    
+    // Save each completed chunk as separate clip with group info
+    const newClips = completedChunks.map((chunk) => ({
+      id: uid(),
+      provider,
+      title: `${currentVoice} - Part ${chunk.index + 1}`,
+      createdAt: Date.now(),
+      settings: { model: currentModel, voice: currentVoice, language, style, pace, multiSpeaker },
+      text: chunk.text,
+      audioData: chunk.audio!.audio,
+      mimeType: chunk.audio!.mimeType,
+      groupId,
+      partNumber: chunk.index + 1,
+    }));
+
+    setClips(prev => [...newClips, ...prev]);
+    toast({ title: "Saved!", description: `${completedChunks.length} parts saved as group to library.` });
+    setShowProcessingPanel(false);
+    setChunkStatuses([]);
   }
 
   async function onGenerate() {
@@ -958,26 +1164,14 @@ export default function Home() {
       const initialStatuses: ChunkStatus[] = chunks.map((chunkText, index) => ({
         index,
         text: chunkText,
-        status: "pending"
+        status: "processing"
       }));
       setChunkStatuses(initialStatuses);
       setShowProcessingPanel(true);
 
-      // Process all chunks
-      for (let i = 0; i < chunks.length; i++) {
-        await generateChunk(chunks[i], i);
-        if (i < chunks.length - 1) {
-          await new Promise(r => setTimeout(r, 300));
-        }
-      }
-
+      // Process all chunks in parallel
+      await Promise.all(chunks.map((chunk, i) => generateChunk(chunk, i)));
       setIsGenerating(false);
-
-      // Check if all completed
-      const allDone = chunkStatuses.every(s => s.status === "completed");
-      if (allDone) {
-        // Auto-merge will happen in finalizeMerge
-      }
     } else {
       // Single chunk mode
       try {
@@ -1014,8 +1208,18 @@ export default function Home() {
     if (!audio) return;
     const url = getAudioUrl(clip);
     if (!url) return;
-    if (nowPlayingId === clip.id && !audio.paused) { audio.pause(); return; }
+    
+    if (nowPlayingId === clip.id) {
+      if (audio.paused) {
+        await audio.play();
+      } else {
+        audio.pause();
+      }
+      return;
+    }
+    
     audio.src = url;
+    audio.load();
     await audio.play();
     setNowPlayingId(clip.id);
   }
@@ -1029,6 +1233,35 @@ export default function Home() {
     setCurrentTime(0);
   }
 
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        const clip: Clip = {
+          id: uid(),
+          provider: 'gemini',
+          title: file.name.replace(/\.[^/.]+$/, ''),
+          createdAt: Date.now(),
+          settings: { model: 'uploaded', voice: 'N/A', language: 'en-US', style: '', pace: 50, multiSpeaker: false },
+          text: 'Uploaded file',
+          audioData: base64,
+          mimeType: file.type || 'audio/mpeg',
+        };
+        setClips(prev => [clip, ...prev]);
+        toast({ title: "Uploaded!", description: `${file.name} added to library` });
+      };
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      toast({ title: "Upload Failed", description: err.message, variant: "destructive" });
+    }
+    
+    e.target.value = '';
+  }
+
   function downloadClip(clip: Clip) {
     const url = getAudioUrl(clip);
     if (!url) return;
@@ -1036,6 +1269,29 @@ export default function Home() {
     a.href = url;
     a.download = `${clip.title}-${clip.id}.wav`;
     a.click();
+  }
+
+  function downloadTranscript(clip: Clip) {
+    if (!clip.transcript || clip.transcript.length === 0) {
+      toast({ title: "No Transcript", description: "Generate transcript first by clicking the sync button", variant: "destructive" });
+      return;
+    }
+    
+    const transcriptText = clip.transcript.map(t => 
+      `${t.startTime.toFixed(2)}s - ${t.endTime.toFixed(2)}s: ${t.word}`
+    ).join('\n');
+    
+    const blob = new Blob([transcriptText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${clip.title}-transcript.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    toast({ title: "Transcript Downloaded", description: `${clip.title}-transcript.txt` });
   }
 
   function deleteClip(clipId: string) {
@@ -1056,20 +1312,54 @@ export default function Home() {
       return;
     }
 
+    // Check size limit (10MB = 10485760 bytes, base64 is ~1.37x original)
+    const sizeBytes = (clip.audioData.length * 3) / 4;
+    
+    // If too large and it's a merged file, suggest using parts
+    if (sizeBytes > 10000000) {
+      // Check if this clip has related parts in the same group
+      const groupClips = clip.groupId ? clips.filter(c => c.groupId === clip.groupId) : [];
+      
+      if (groupClips.length > 1) {
+        toast({ 
+          title: "Generating Transcripts", 
+          description: `Processing ${groupClips.length} parts separately...`,
+        });
+        
+        // Generate transcript for each part
+        for (const part of groupClips) {
+          if (part.audioData) {
+            const partSize = (part.audioData.length * 3) / 4;
+            if (partSize <= 10000000) {
+              await generateTranscriptForClip(part);
+            }
+          }
+        }
+        return;
+      }
+      
+      toast({ 
+        title: "Audio Too Large", 
+        description: "Audio exceeds 10MB. Re-generate with 'Save Separately' option for transcripts.", 
+        variant: "destructive" 
+      });
+      return;
+    }
+
     setGeneratingTranscriptId(clip.id);
     try {
       const transcript = await getTranscriptWithTimestamps(
         apiKeys.gcloud,
         clip.audioData,
-        clip.settings.language || "en-US"
+        clip.settings.language || "en-US",
+        clip.mimeType
       );
 
-      // Update clip with transcript
       setClips(prev => prev.map(c =>
         c.id === clip.id ? { ...c, transcript } : c
       ));
 
-      toast({ title: "Transcript Generated!", description: `${transcript.length} words with timestamps saved.` });
+      toast({ title: "Transcript Generated!", description: `${transcript.length} words saved.` });
     } catch (err: any) {
       toast({ title: "Transcript Error", description: err.message || "Failed to generate transcript", variant: "destructive" });
     } finally {
@@ -1090,6 +1380,22 @@ export default function Home() {
 
   return (
     <div className="min-h-screen w-full bg-background pb-20">
+      {/* Dark Mode Toggle */}
+      <div className="fixed top-4 right-4 z-40">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          className="h-8 w-8 rounded-full"
+        >
+          {theme === "dark" ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </Button>
+      </div>
+
       <audio ref={audioRef} onEnded={() => { setNowPlayingId(null); setCurrentTime(0); }} onTimeUpdate={handleTimeUpdate} />
 
       <AnimatePresence>
@@ -1364,23 +1670,52 @@ export default function Home() {
                     ))}
                   </div>
 
-                  {/* Merge button when all complete */}
-                  {chunkStatuses.every(s => s.status === "completed") && (
-                    <Button className="w-full" onClick={finalizeMerge} disabled={isGenerating}>
-                      {isGenerating ? (
-                        <><Loader2 className="h-4 w-4 animate-spin mr-2" />Merging...</>
-                      ) : (
-                        <><AudioLines className="h-4 w-4 mr-2" />Merge & Save to Library</>
-                      )}
-                    </Button>
-                  )}
+                  {/* Action buttons */}
+                  <div className="space-y-2">
+                    {chunkStatuses.some(s => s.status === "failed") && (
+                      <Button 
+                        variant="outline" 
+                        className="w-full" 
+                        onClick={() => {
+                          chunkStatuses.forEach((chunk, i) => {
+                            if (chunk.status === "failed") retryChunk(i);
+                          });
+                        }}
+                        disabled={isGenerating}
+                      >
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Retry All Failed
+                      </Button>
+                    )}
+                    
+                    {chunkStatuses.every(s => s.status === "completed") && (
+                      <>
+                        <Button className="w-full" onClick={finalizeMerge} disabled={isGenerating}>
+                          {isGenerating ? (
+                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />Merging...</>
+                          ) : (
+                            <><AudioLines className="h-4 w-4 mr-2" />Merge All & Save</>
+                          )}
+                        </Button>
+                        <Button variant="outline" className="w-full" onClick={saveWithoutMerge}>
+                          <Split className="h-4 w-4 mr-2" />Save Separately ({chunkStatuses.length} clips)
+                        </Button>
+                      </>
+                    )}
+                    
+                    {chunkStatuses.some(s => s.status === "completed") && !chunkStatuses.every(s => s.status === "completed") && (
+                      <Button variant="outline" className="w-full" onClick={saveWithoutMerge}>
+                        <Split className="h-4 w-4 mr-2" />Save Completed Only ({chunkStatuses.filter(s => s.status === "completed").length} clips)
+                      </Button>
+                    )}
+                  </div>
 
                   {/* Cancel button */}
-                  <Button variant="outline" className="w-full" onClick={() => {
+                  <Button variant="ghost" className="w-full" onClick={() => {
                     setShowProcessingPanel(false);
                     setChunkStatuses([]);
                   }}>
-                    <X className="h-4 w-4 mr-2" /> Cancel
+                    <X className="h-4 w-4 mr-2" /> Close
                   </Button>
                 </CardContent>
               </Card>
@@ -1403,11 +1738,21 @@ export default function Home() {
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">Library ({clips.length})</h2>
-              {nowPlayingId && (
-                <Button variant="outline" size="sm" onClick={stopPlayback}>
-                  <Pause className="h-4 w-4 mr-1" /> Stop
+              <label htmlFor="file-upload">
+                <Button variant="outline" size="sm" asChild>
+                  <span className="cursor-pointer">
+                    <Upload className="h-4 w-4 mr-2" />
+                    Upload
+                  </span>
                 </Button>
-              )}
+                <input
+                  id="file-upload"
+                  type="file"
+                  accept="audio/*,video/*,.mp3,.wav,.m4a,.ogg,.flac,.aac,.wma,.mp4,.mov,.avi,.mkv"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+              </label>
             </div>
 
             {clips.length === 0 ? (
@@ -1418,61 +1763,93 @@ export default function Home() {
               </div>
             ) : (
               <div className="space-y-2">
-                {clips.map(clip => {
+                {clips.map((clip, idx) => {
                   const isPlaying = nowPlayingId === clip.id;
+                  const isGrouped = clip.groupId && clip.partNumber;
+                  const isFirstInGroup = isGrouped && (idx === 0 || clips[idx - 1]?.groupId !== clip.groupId);
+                  const groupClips = isGrouped ? clips.filter(c => c.groupId === clip.groupId) : [];
+                  
                   return (
-                    <Card key={clip.id} className="bg-card/70">
-                      <CardContent className="p-3">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium truncate">{clip.title}</span>
-                              <Badge variant="outline" className="text-xs shrink-0">
-                                {clip.provider === "gemini" ? "Gemini" : "Chirp"}
-                              </Badge>
-                              {clip.transcript && (
-                                <Badge variant="secondary" className="text-xs shrink-0 bg-green-500/20 text-green-600">
-                                  <Check className="h-3 w-3 mr-0.5" /> Synced
-                                </Badge>
-                              )}
-                            </div>
-                            <div className="text-xs text-muted-foreground mt-0.5">
-                              {formatTime(clip.createdAt)} • {countWords(clip.text)} words
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <Button size="icon" variant={isPlaying ? "default" : "ghost"} className="h-8 w-8"
-                              onClick={() => playClip(clip)}>
-                              {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                            </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenTeleprompter(clip)}>
-                              <BookOpen className="h-4 w-4" />
-                            </Button>
-                            {/* Generate Transcript Button */}
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className={`h-8 w-8 ${clip.transcript ? "text-green-600" : "text-orange-500"}`}
-                              onClick={() => generateTranscriptForClip(clip)}
-                              disabled={generatingTranscriptId === clip.id}
-                            >
-                              {generatingTranscriptId === clip.id ? (
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                              ) : (
-                                <RefreshCw className="h-4 w-4" />
-                              )}
-                            </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => downloadClip(clip)}>
-                              <Download className="h-4 w-4" />
-                            </Button>
-                            <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteClip(clip.id)}>
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                    <div key={clip.id}>
+                      {isFirstInGroup && (
+                        <div className="flex items-center gap-2 px-2 py-1 bg-muted/30 rounded-t-lg border-b">
+                          <Split className="h-3 w-3 text-muted-foreground" />
+                          <span className="text-xs text-muted-foreground font-medium">
+                            {clip.title.replace(/ - Part \d+$/, '')} • {groupClips.length} parts
+                          </span>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{clip.text}</p>
-                      </CardContent>
-                    </Card>
+                      )}
+                      <Card className={`bg-card/70 ${isGrouped ? 'rounded-t-none border-t-0' : ''}`}>
+                        <CardContent className="p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium truncate">{clip.title}</span>
+                                {!isGrouped && (
+                                  <Badge variant="outline" className="text-xs shrink-0">
+                                    {clip.provider === "gemini" ? "Gemini" : "Chirp"}
+                                  </Badge>
+                                )}
+                                {clip.transcript && (
+                                  <Badge variant="secondary" className="text-xs shrink-0 bg-green-500/20 text-green-600">
+                                    <Check className="h-3 w-3 mr-0.5" /> Synced
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground mt-0.5">
+                                {formatTime(clip.createdAt)} • {countWords(clip.text)} words
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <Button size="icon" variant={isPlaying ? "default" : "ghost"} className="h-8 w-8"
+                                onClick={() => isPlaying ? stopPlayback() : playClip(clip)}>
+                                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                              </Button>
+                              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenTeleprompter(clip)}>
+                                <BookOpen className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className={`h-8 w-8 ${clip.transcript ? "text-green-600" : "text-orange-500"}`}
+                                onClick={() => generateTranscriptForClip(clip)}
+                                disabled={generatingTranscriptId === clip.id}
+                                title={clip.transcript ? "Regenerate transcript" : "Generate transcript for word sync"}
+                              >
+                                {generatingTranscriptId === clip.id ? (
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                  <RefreshCw className="h-4 w-4" />
+                                )}
+                              </Button>
+                              <Button 
+                                size="icon" 
+                                variant="ghost" 
+                                className="h-8 w-8" 
+                                onClick={() => downloadClip(clip)}
+                                title="Download audio"
+                              >
+                                <Download className="h-4 w-4" />
+                              </Button>
+                              <Button 
+                                size="icon" 
+                                variant="ghost" 
+                                className={`h-8 w-8 ${clip.transcript ? "text-blue-600" : "text-muted-foreground/30"}`}
+                                onClick={() => downloadTranscript(clip)}
+                                disabled={!clip.transcript}
+                                title={clip.transcript ? "Download transcript" : "Generate transcript first"}
+                              >
+                                <FileText className="h-4 w-4" />
+                              </Button>
+                              <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteClip(clip.id)}>
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                          <p className="text-sm text-muted-foreground mt-2 line-clamp-2">{clip.text}</p>
+                        </CardContent>
+                      </Card>
+                    </div>
                   );
                 })}
               </div>
@@ -1485,7 +1862,7 @@ export default function Home() {
           <div className="space-y-3">
             <h2 className="font-semibold">Teleprompter</h2>
             <p className="text-sm text-muted-foreground">
-              Select a clip. Click <RefreshCw className="h-3 w-3 inline" /> to sync word timing.
+              Select a clip. Click <RefreshCw className="h-3 w-3 inline text-orange-500" /> to sync word timing.
             </p>
 
             {clips.length === 0 ? (
