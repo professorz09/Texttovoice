@@ -34,10 +34,14 @@ import { useToast } from "@/hooks/use-toast";
 
 // API Keys storage
 const API_KEYS_STORAGE = "voiceforge_api_keys";
+const SETTINGS_STORAGE = "voiceforge_settings";
 
 // Models
 const GEMINI_MODEL = "gemini-2.5-pro-preview-tts";
 const CHIRP_MODEL = "chirp3-hd";
+
+// Default word limit per chunk
+const DEFAULT_WORD_LIMIT = 500;
 
 const VOICES_GEMINI = [
   { name: "Zephyr", desc: "Bright" },
@@ -136,7 +140,6 @@ const LANGUAGES = [
   { code: "ja-JP", name: "Japanese" },
 ] as const;
 
-const WORDS_LIMIT = 5000;
 const STORAGE_KEY = "voiceforge_library";
 
 type Provider = "gemini" | "chirp";
@@ -145,6 +148,20 @@ type ActiveView = "generator" | "library" | "teleprompter" | "settings";
 type ApiKeys = {
   gemini: string;
   gcloud: string;
+};
+
+type AppSettings = {
+  teleprompterFontSize: number; // 16-48
+  teleprompterScrollSpeed: number; // 0.5-2
+  wordLimit: number; // words per chunk
+};
+
+type ChunkStatus = {
+  index: number;
+  text: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  audio?: { audio: string; mimeType: string };
+  error?: string;
 };
 
 type Clip = {
@@ -221,6 +238,30 @@ function saveApiKeys(keys: ApiKeys) {
     localStorage.setItem(API_KEYS_STORAGE, JSON.stringify(keys));
   } catch (e) {
     console.error("Save API keys failed:", e);
+  }
+}
+
+const defaultSettings: AppSettings = {
+  teleprompterFontSize: 28,
+  teleprompterScrollSpeed: 1,
+  wordLimit: DEFAULT_WORD_LIMIT,
+};
+
+function loadSettings(): AppSettings {
+  try {
+    const data = localStorage.getItem(SETTINGS_STORAGE);
+    if (data) return { ...defaultSettings, ...JSON.parse(data) };
+  } catch (e) {
+    console.error("Load settings failed:", e);
+  }
+  return defaultSettings;
+}
+
+function saveSettings(settings: AppSettings) {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE, JSON.stringify(settings));
+  } catch (e) {
+    console.error("Save settings failed:", e);
   }
 }
 
@@ -462,13 +503,14 @@ function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
   return buffer;
 }
 
-function Teleprompter({ text, isPlaying, currentTime, duration, onClose }: {
+function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSize, scrollSpeed }: {
   text: string; isPlaying: boolean; currentTime: number; duration: number; onClose: () => void;
+  fontSize: number; scrollSpeed: number;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [highlightIndex, setHighlightIndex] = useState(0);
   const words = useMemo(() => text.split(/\s+/).filter(Boolean), [text]);
-  const wordsPerSecond = duration > 0 ? words.length / duration : 2;
+  const wordsPerSecond = duration > 0 ? (words.length / duration) * scrollSpeed : 2;
 
   useEffect(() => {
     if (isPlaying && duration > 0) {
@@ -499,7 +541,7 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose }: {
         </div>
         <ScrollArea className="flex-1" ref={scrollRef}>
           <div className="mx-auto max-w-2xl px-6 py-12">
-            <div className="text-2xl leading-relaxed">
+            <div style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}>
               {words.map((word, i) => (
                 <span key={i} data-word-index={i}
                   className={`inline-block px-1 py-0.5 transition-all ${
@@ -535,8 +577,6 @@ export default function Home() {
   const [multiSpeaker, setMultiSpeaker] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [text, setText] = useState<string>("");
-  const [largeScriptMode, setLargeScriptMode] = useState(false);
-  const [chunkProgress, setChunkProgress] = useState({ current: 0, total: 0 });
   const [isGenerating, setIsGenerating] = useState(false);
   const [clips, setClips] = useState<Clip[]>(() => loadLibraryFromStorage());
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -546,14 +586,19 @@ export default function Home() {
   const [teleprompterClip, setTeleprompterClip] = useState<Clip | null>(null);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [apiKeys, setApiKeys] = useState<ApiKeys>(() => loadApiKeys());
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [chunkStatuses, setChunkStatuses] = useState<ChunkStatus[]>([]);
+  const [showProcessingPanel, setShowProcessingPanel] = useState(false);
 
   useEffect(() => { saveLibraryToStorage(clips); }, [clips]);
   useEffect(() => { saveApiKeys(apiKeys); }, [apiKeys]);
+  useEffect(() => { saveSettings(settings); }, [settings]);
 
   const currentModel = provider === "gemini" ? GEMINI_MODEL : CHIRP_MODEL;
   const wordCount = countWords(text);
-  const needsChunking = wordCount > WORDS_LIMIT;
+  const needsChunking = wordCount > settings.wordLimit;
   const currentVoice = provider === "gemini" ? voice : chirpVoice;
+  const textChunks = useMemo(() => needsChunking ? splitTextIntoChunks(text, settings.wordLimit) : [text], [text, settings.wordLimit, needsChunking]);
 
   const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
@@ -594,44 +639,72 @@ export default function Home() {
     }
   }
 
-  async function onGenerate() {
-    if (!text.trim()) {
-      toast({ title: "Text required", description: "Enter text to generate speech." });
+  // Generate a single chunk
+  async function generateChunk(chunkText: string, index: number): Promise<{ audio: string; mimeType: string } | null> {
+    setChunkStatuses(prev => prev.map((s, i) =>
+      i === index ? { ...s, status: "processing", error: undefined } : s
+    ));
+
+    try {
+      const result = await generateTTS(chunkText);
+      if (result) {
+        setChunkStatuses(prev => prev.map((s, i) =>
+          i === index ? { ...s, status: "completed", audio: result } : s
+        ));
+        return result;
+      } else {
+        setChunkStatuses(prev => prev.map((s, i) =>
+          i === index ? { ...s, status: "failed", error: "API key required" } : s
+        ));
+        return null;
+      }
+    } catch (err: any) {
+      setChunkStatuses(prev => prev.map((s, i) =>
+        i === index ? { ...s, status: "failed", error: err.message || "Failed" } : s
+      ));
+      return null;
+    }
+  }
+
+  // Retry a failed chunk
+  async function retryChunk(index: number) {
+    const chunk = chunkStatuses[index];
+    if (!chunk) return;
+
+    setIsGenerating(true);
+    await generateChunk(chunk.text, index);
+    setIsGenerating(false);
+
+    // Check if all chunks are now completed
+    const updatedStatuses = chunkStatuses.map((s, i) =>
+      i === index ? { ...s, status: "completed" as const } : s
+    );
+    if (updatedStatuses.every(s => s.status === "completed")) {
+      await finalizeMerge();
+    }
+  }
+
+  // Finalize and merge all audio
+  async function finalizeMerge() {
+    const allCompleted = chunkStatuses.every(s => s.status === "completed" && s.audio);
+    if (!allCompleted) {
+      toast({ title: "Error", description: "Some chunks failed. Retry failed chunks first.", variant: "destructive" });
       return;
     }
 
     setIsGenerating(true);
     try {
-      let audioResult: { audio: string; mimeType: string } | null = null;
+      const audioChunks = chunkStatuses.map(s => s.audio!);
+      let audioResult: { audio: string; mimeType: string };
 
-      if (largeScriptMode && needsChunking) {
-        const chunks = splitTextIntoChunks(text, WORDS_LIMIT);
-        setChunkProgress({ current: 0, total: chunks.length });
-        const audioChunks: { audio: string; mimeType: string }[] = [];
-
-        for (let i = 0; i < chunks.length; i++) {
-          setChunkProgress({ current: i + 1, total: chunks.length });
-          const result = await generateTTS(chunks[i]);
-          if (!result) {
-            setChunkProgress({ current: 0, total: 0 });
-            return; // Stop if any chunk fails
-          }
-          audioChunks.push(result);
-          await new Promise(r => setTimeout(r, 300));
-        }
-
-        if (audioChunks.length > 0) {
-          try { audioResult = await mergeAudioChunks(audioChunks); }
-          catch { audioResult = audioChunks[audioChunks.length - 1]; }
-        }
-        setChunkProgress({ current: 0, total: 0 });
+      if (audioChunks.length === 1) {
+        audioResult = audioChunks[0];
       } else {
-        audioResult = await generateTTS(text);
-      }
-
-      // Only save if we got real audio
-      if (!audioResult) {
-        return;
+        try {
+          audioResult = await mergeAudioChunks(audioChunks);
+        } catch {
+          audioResult = audioChunks[audioChunks.length - 1];
+        }
       }
 
       const clip: Clip = {
@@ -646,9 +719,82 @@ export default function Home() {
       };
 
       setClips(prev => [clip, ...prev]);
-      toast({ title: "Saved!", description: "Audio saved to library." });
+      toast({ title: "Saved!", description: "Audio merged and saved to library." });
+      setShowProcessingPanel(false);
+      setChunkStatuses([]);
     } finally {
       setIsGenerating(false);
+    }
+  }
+
+  async function onGenerate() {
+    if (!text.trim()) {
+      toast({ title: "Text required", description: "Enter text to generate speech." });
+      return;
+    }
+
+    // Check API key first
+    if (provider === "gemini" && !apiKeys.gemini) {
+      toast({ title: "API Key Required", description: "Add your Gemini API key in Settings", variant: "destructive" });
+      return;
+    }
+    if (provider === "chirp" && !apiKeys.gcloud) {
+      toast({ title: "API Key Required", description: "Add your Google Cloud API key in Settings", variant: "destructive" });
+      return;
+    }
+
+    setIsGenerating(true);
+
+    if (needsChunking) {
+      // Multi-chunk mode with processing panel
+      const chunks = textChunks;
+      const initialStatuses: ChunkStatus[] = chunks.map((chunkText, index) => ({
+        index,
+        text: chunkText,
+        status: "pending"
+      }));
+      setChunkStatuses(initialStatuses);
+      setShowProcessingPanel(true);
+
+      // Process all chunks
+      for (let i = 0; i < chunks.length; i++) {
+        await generateChunk(chunks[i], i);
+        if (i < chunks.length - 1) {
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+
+      setIsGenerating(false);
+
+      // Check if all completed
+      const allDone = chunkStatuses.every(s => s.status === "completed");
+      if (allDone) {
+        // Auto-merge will happen in finalizeMerge
+      }
+    } else {
+      // Single chunk mode
+      try {
+        const audioResult = await generateTTS(text);
+        if (!audioResult) {
+          return;
+        }
+
+        const clip: Clip = {
+          id: uid(),
+          provider,
+          title: currentVoice,
+          createdAt: Date.now(),
+          settings: { model: currentModel, voice: currentVoice, language, style, pace, multiSpeaker },
+          text,
+          audioData: audioResult.audio,
+          mimeType: audioResult.mimeType,
+        };
+
+        setClips(prev => [clip, ...prev]);
+        toast({ title: "Saved!", description: "Audio saved to library." });
+      } finally {
+        setIsGenerating(false);
+      }
     }
   }
 
@@ -713,6 +859,8 @@ export default function Home() {
             currentTime={currentTime}
             duration={duration}
             onClose={handleCloseTeleprompter}
+            fontSize={settings.teleprompterFontSize}
+            scrollSpeed={settings.teleprompterScrollSpeed}
           />
         )}
       </AnimatePresence>
@@ -796,16 +944,22 @@ export default function Home() {
                 className="min-h-36 resize-none" placeholder="Enter your text here..." />
             </div>
 
+            {/* Script Chunks Preview */}
             {needsChunking && (
-              <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="rounded-lg border p-3 space-y-2">
                 <div className="flex items-center gap-2">
                   <Split className="h-4 w-4 text-primary" />
-                  <div>
-                    <div className="text-sm font-medium">Large Script</div>
-                    <div className="text-xs text-muted-foreground">{Math.ceil(wordCount / WORDS_LIMIT)} chunks</div>
-                  </div>
+                  <span className="text-sm font-medium">Script will be split into {textChunks.length} parts</span>
                 </div>
-                <Switch checked={largeScriptMode} onCheckedChange={setLargeScriptMode} />
+                <div className="space-y-1 max-h-32 overflow-y-auto">
+                  {textChunks.map((chunk, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs p-2 rounded bg-muted/50">
+                      <Badge variant="outline" className="shrink-0">Script {i + 1}</Badge>
+                      <span className="text-muted-foreground truncate">{chunk.slice(0, 50)}...</span>
+                      <span className="ml-auto text-muted-foreground shrink-0">{countWords(chunk)} words</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -839,23 +993,79 @@ export default function Home() {
               </motion.div>
             )}
 
-            {chunkProgress.total > 0 && (
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>Processing...</span>
-                  <span>{chunkProgress.current}/{chunkProgress.total}</span>
-                </div>
-                <Progress value={(chunkProgress.current / chunkProgress.total) * 100} />
-              </div>
+            {/* Processing Panel */}
+            {showProcessingPanel && chunkStatuses.length > 0 && (
+              <Card className="border-primary/50">
+                <CardContent className="pt-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-sm">Processing {chunkStatuses.length} Scripts</span>
+                    <Badge variant="secondary">
+                      {chunkStatuses.filter(s => s.status === "completed").length}/{chunkStatuses.length} done
+                    </Badge>
+                  </div>
+                  <div className="space-y-2">
+                    {chunkStatuses.map((chunk, i) => (
+                      <div key={i} className={`flex items-center gap-2 p-2 rounded text-sm ${
+                        chunk.status === "completed" ? "bg-green-500/10" :
+                        chunk.status === "failed" ? "bg-red-500/10" :
+                        chunk.status === "processing" ? "bg-blue-500/10" : "bg-muted/50"
+                      }`}>
+                        <Badge variant="outline" className="shrink-0">Script {i + 1}</Badge>
+                        <span className="flex-1 truncate text-xs text-muted-foreground">
+                          {chunk.text.slice(0, 30)}...
+                        </span>
+                        {chunk.status === "processing" && (
+                          <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                        )}
+                        {chunk.status === "completed" && (
+                          <Badge variant="secondary" className="bg-green-500/20 text-green-600">Done</Badge>
+                        )}
+                        {chunk.status === "failed" && (
+                          <div className="flex items-center gap-1">
+                            <Badge variant="destructive" className="text-xs">{chunk.error || "Failed"}</Badge>
+                            <Button size="sm" variant="ghost" className="h-6 px-2" onClick={() => retryChunk(i)}>
+                              Retry
+                            </Button>
+                          </div>
+                        )}
+                        {chunk.status === "pending" && (
+                          <Badge variant="outline" className="text-muted-foreground">Waiting</Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Merge button when all complete */}
+                  {chunkStatuses.every(s => s.status === "completed") && (
+                    <Button className="w-full" onClick={finalizeMerge} disabled={isGenerating}>
+                      {isGenerating ? (
+                        <><Loader2 className="h-4 w-4 animate-spin mr-2" />Merging...</>
+                      ) : (
+                        <><AudioLines className="h-4 w-4 mr-2" />Merge & Save to Library</>
+                      )}
+                    </Button>
+                  )}
+
+                  {/* Cancel button */}
+                  <Button variant="outline" className="w-full" onClick={() => {
+                    setShowProcessingPanel(false);
+                    setChunkStatuses([]);
+                  }}>
+                    <X className="h-4 w-4 mr-2" /> Cancel
+                  </Button>
+                </CardContent>
+              </Card>
             )}
 
-            <Button className="w-full h-12 text-base" onClick={onGenerate} disabled={isGenerating}>
-              {isGenerating ? (
-                <><Loader2 className="h-5 w-5 animate-spin mr-2" />Generating...</>
-              ) : (
-                <><Mic className="h-5 w-5 mr-2" />Generate Speech</>
-              )}
-            </Button>
+            {!showProcessingPanel && (
+              <Button className="w-full h-12 text-base" onClick={onGenerate} disabled={isGenerating}>
+                {isGenerating ? (
+                  <><Loader2 className="h-5 w-5 animate-spin mr-2" />Generating...</>
+                ) : (
+                  <><Mic className="h-5 w-5 mr-2" />Generate Speech</>
+                )}
+              </Button>
+            )}
           </div>
         )}
 
@@ -956,11 +1166,8 @@ export default function Home() {
         {/* SETTINGS VIEW */}
         {activeView === "settings" && (
           <div className="space-y-4">
-            <h2 className="font-semibold">API Settings</h2>
-            <p className="text-sm text-muted-foreground">
-              Enter your API keys. Keys are stored locally on your device.
-            </p>
-
+            {/* API Keys Section */}
+            <h2 className="font-semibold">API Keys</h2>
             <Card>
               <CardContent className="pt-4 space-y-4">
                 <div className="space-y-2">
@@ -976,11 +1183,7 @@ export default function Home() {
                     value={apiKeys.gemini}
                     onChange={(e) => setApiKeys(prev => ({ ...prev, gemini: e.target.value }))}
                   />
-                  {apiKeys.gemini && (
-                    <Badge variant="secondary" className="text-xs">
-                      ✓ Key saved
-                    </Badge>
-                  )}
+                  {apiKeys.gemini && <Badge variant="secondary" className="text-xs">✓ Saved</Badge>}
                 </div>
 
                 <Separator />
@@ -998,21 +1201,85 @@ export default function Home() {
                     value={apiKeys.gcloud}
                     onChange={(e) => setApiKeys(prev => ({ ...prev, gcloud: e.target.value }))}
                   />
-                  {apiKeys.gcloud && (
-                    <Badge variant="secondary" className="text-xs">
-                      ✓ Key saved
-                    </Badge>
-                  )}
+                  {apiKeys.gcloud && <Badge variant="secondary" className="text-xs">✓ Saved</Badge>}
                 </div>
               </CardContent>
             </Card>
 
+            {/* Teleprompter Settings */}
+            <h2 className="font-semibold">Teleprompter</h2>
+            <Card>
+              <CardContent className="pt-4 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <Label className="text-sm">Font Size</Label>
+                    <span className="text-sm text-muted-foreground">{settings.teleprompterFontSize}px</span>
+                  </div>
+                  <Slider
+                    value={[settings.teleprompterFontSize]}
+                    onValueChange={(v) => setSettings(prev => ({ ...prev, teleprompterFontSize: v[0] }))}
+                    min={16}
+                    max={48}
+                    step={2}
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Small</span>
+                    <span>Large</span>
+                  </div>
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <Label className="text-sm">Scroll Speed</Label>
+                    <span className="text-sm text-muted-foreground">{settings.teleprompterScrollSpeed}x</span>
+                  </div>
+                  <Slider
+                    value={[settings.teleprompterScrollSpeed * 10]}
+                    onValueChange={(v) => setSettings(prev => ({ ...prev, teleprompterScrollSpeed: v[0] / 10 }))}
+                    min={5}
+                    max={20}
+                    step={1}
+                  />
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>0.5x Slow</span>
+                    <span>2x Fast</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Script Settings */}
+            <h2 className="font-semibold">Script Processing</h2>
+            <Card>
+              <CardContent className="pt-4 space-y-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <Label className="text-sm">Word Limit per Script</Label>
+                    <span className="text-sm text-muted-foreground">{settings.wordLimit} words</span>
+                  </div>
+                  <Slider
+                    value={[settings.wordLimit]}
+                    onValueChange={(v) => setSettings(prev => ({ ...prev, wordLimit: v[0] }))}
+                    min={100}
+                    max={2000}
+                    step={100}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Scripts longer than this will be split into multiple parts automatically.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Security Note */}
             <div className="rounded-lg border p-3 bg-muted/30">
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 text-muted-foreground mt-0.5" />
                 <div className="text-xs text-muted-foreground">
-                  <p className="font-medium mb-1">Security Note</p>
-                  <p>API keys are stored in your browser's local storage and never sent to any server except Google's APIs.</p>
+                  <p className="font-medium mb-1">Data Storage</p>
+                  <p>All data is stored locally on your device. API keys are only sent to Google's APIs.</p>
                 </div>
               </div>
             </div>
@@ -1022,11 +1289,12 @@ export default function Home() {
               className="w-full"
               onClick={() => {
                 setApiKeys({ gemini: "", gcloud: "" });
-                toast({ title: "Keys cleared", description: "All API keys have been removed." });
+                setSettings(defaultSettings);
+                toast({ title: "Reset", description: "All settings have been reset." });
               }}
             >
               <Trash2 className="h-4 w-4 mr-2" />
-              Clear All Keys
+              Reset All Settings
             </Button>
           </div>
         )}
