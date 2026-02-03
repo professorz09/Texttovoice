@@ -3,7 +3,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'com.voiceforge.app',
   appName: 'VoiceForge',
-  webDir: 'client/dist/public',
+  webDir: 'dist/public',
   server: {
     androidScheme: 'https'
   },
