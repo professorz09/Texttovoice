@@ -4,25 +4,31 @@
 @custom-variant dark (&:is(.dark *));
 
 body {
-  background-color: #f0f0f0;
-  color: #333;
   font-family: system-ui, -apple-system, sans-serif;
-  /* Mobile optimizations */
   -webkit-tap-highlight-color: transparent;
   -webkit-touch-callout: none;
   overscroll-behavior: contain;
-  /* Safe area for notch/navigation bars */
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
   padding-left: env(safe-area-inset-left);
   padding-right: env(safe-area-inset-right);
 }
 
+/* Light mode - clean white */
+body {
+  background-color: #ffffff;
+  color: #1a202c;
+}
+
+/* Dark mode - true dark */
+body.dark {
+  background-color: #0f172a;
+  color: #f1f5f9;
+}
+
 #root {
   min-height: 100vh;
-  padding: 20px;
-  /* Additional padding for safe areas */
-  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  padding: 0;
 }
 
 /* Mobile-specific optimizations */
