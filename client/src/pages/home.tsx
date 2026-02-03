@@ -1439,54 +1439,113 @@ export default function Home() {
       return;
     }
 
-    // Check size limit (10MB = 10485760 bytes, base64 is ~1.37x original)
-    const sizeBytes = (clip.audioData.length * 3) / 4;
+    setGeneratingTranscriptId(clip.id);
     
-    // If too large and it's a merged file, suggest using parts
-    if (sizeBytes > 10000000) {
-      // Check if this clip has related parts in the same group
-      const groupClips = clip.groupId ? clips.filter(c => c.groupId === clip.groupId) : [];
+    try {
+      const sizeBytes = (clip.audioData.length * 3) / 4;
+      const maxChunkSize = 9000000; // 9MB to be safe
       
-      if (groupClips.length > 1) {
+      // If audio is larger than 10MB, split into chunks
+      if (sizeBytes > 10000000) {
         toast({ 
-          title: "Generating Transcripts", 
-          description: `Processing ${groupClips.length} parts separately...`,
+          title: "Processing Large Audio", 
+          description: "Splitting audio into chunks for transcription...",
         });
         
-        // Generate transcript for each part
-        for (const part of groupClips) {
-          if (part.audioData) {
-            const partSize = (part.audioData.length * 3) / 4;
-            if (partSize <= 10000000) {
-              await generateTranscriptForClip(part);
+        // Decode audio to split it
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const binary = atob(clip.audioData);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        
+        const audioBuffer = await audioContext.decodeAudioData(bytes.buffer.slice(0));
+        const duration = audioBuffer.duration;
+        const chunkDuration = (maxChunkSize / sizeBytes) * duration;
+        const numChunks = Math.ceil(duration / chunkDuration);
+        
+        let allTranscripts: WordTimestamp[] = [];
+        
+        // Process each chunk
+        for (let i = 0; i < numChunks; i++) {
+          const startTime = i * chunkDuration;
+          const endTime = Math.min((i + 1) * chunkDuration, duration);
+          const chunkLength = Math.floor((endTime - startTime) * audioBuffer.sampleRate);
+          
+          // Create chunk buffer
+          const chunkBuffer = audioContext.createBuffer(
+            audioBuffer.numberOfChannels,
+            chunkLength,
+            audioBuffer.sampleRate
+          );
+          
+          for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+            const sourceData = audioBuffer.getChannelData(channel);
+            const chunkData = chunkBuffer.getChannelData(channel);
+            const offset = Math.floor(startTime * audioBuffer.sampleRate);
+            for (let j = 0; j < chunkLength; j++) {
+              chunkData[j] = sourceData[offset + j];
             }
           }
+          
+          // Encode chunk to WAV
+          const wavData = encodeWAV(chunkBuffer);
+          const uint8 = new Uint8Array(wavData);
+          let base64 = '';
+          const chunkSize = 8192;
+          for (let j = 0; j < uint8.length; j += chunkSize) {
+            const chunk = uint8.subarray(j, Math.min(j + chunkSize, uint8.length));
+            base64 += String.fromCharCode(...chunk);
+          }
+          base64 = btoa(base64);
+          
+          // Get transcript for this chunk
+          const chunkTranscript = await getTranscriptWithTimestamps(
+            apiKeys.gcloud,
+            base64,
+            clip.settings.language || "en-US",
+            "audio/wav"
+          );
+          
+          // Adjust timestamps by chunk start time
+          const adjustedTranscript = chunkTranscript.map(t => ({
+            ...t,
+            startTime: t.startTime + startTime,
+            endTime: t.endTime + startTime
+          }));
+          
+          allTranscripts = [...allTranscripts, ...adjustedTranscript];
+          
+          toast({ 
+            title: `Processing Chunk ${i + 1}/${numChunks}`, 
+            description: `${Math.round((i + 1) / numChunks * 100)}% complete`
+          });
         }
-        return;
+        
+        await audioContext.close();
+        
+        setClips(prev => prev.map(c =>
+          c.id === clip.id ? { ...c, transcript: allTranscripts } : c
+        ));
+        
+        toast({ title: "Transcript Generated!", description: `${allTranscripts.length} words processed from large audio.` });
+        
+      } else {
+        // Normal processing for small files
+        const transcript = await getTranscriptWithTimestamps(
+          apiKeys.gcloud,
+          clip.audioData,
+          clip.settings.language || "en-US",
+          clip.mimeType
+        );
+
+        setClips(prev => prev.map(c =>
+          c.id === clip.id ? { ...c, transcript } : c
+        ));
+
+        toast({ title: "Transcript Generated!", description: `${transcript.length} words saved.` });
       }
-      
-      toast({ 
-        title: "Audio Too Large", 
-        description: "Audio exceeds 10MB. Re-generate with 'Save Separately' option for transcripts.", 
-        variant: "destructive" 
-      });
-      return;
-    }
-
-    setGeneratingTranscriptId(clip.id);
-    try {
-      const transcript = await getTranscriptWithTimestamps(
-        apiKeys.gcloud,
-        clip.audioData,
-        clip.settings.language || "en-US",
-        clip.mimeType
-      );
-
-      setClips(prev => prev.map(c =>
-        c.id === clip.id ? { ...c, transcript } : c
-      ));
-
-      toast({ title: "Transcript Generated!", description: `${transcript.length} words saved.` });
     } catch (err: any) {
       toast({ title: "Transcript Error", description: err.message || "Failed to generate transcript", variant: "destructive" });
     } finally {
