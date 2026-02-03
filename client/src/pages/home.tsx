@@ -3,14 +3,19 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   AudioLines,
   BookOpen,
+  Check,
+  ChevronDown,
   Download,
   FileText,
   Loader2,
   Mic,
   Pause,
   Play,
+  RefreshCw,
   Settings,
   Split,
+  ToggleLeft,
+  ToggleRight,
   Trash2,
   Wand2,
   X,
@@ -153,7 +158,14 @@ type ApiKeys = {
 type AppSettings = {
   teleprompterFontSize: number; // 16-48
   teleprompterScrollSpeed: number; // 0.5-2
-  wordLimit: number; // words per chunk
+  wordLimit: number; // words per chunk (fixed 500)
+  longTextMode: boolean; // enable multi-chunk for long text
+};
+
+type WordTimestamp = {
+  word: string;
+  startTime: number; // seconds
+  endTime: number; // seconds
 };
 
 type ChunkStatus = {
@@ -180,6 +192,7 @@ type Clip = {
   text: string;
   audioData?: string;
   mimeType?: string;
+  transcript?: WordTimestamp[]; // word-level timestamps from Speech-to-Text
 };
 
 function formatTime(ts: number) {
@@ -244,7 +257,8 @@ function saveApiKeys(keys: ApiKeys) {
 const defaultSettings: AppSettings = {
   teleprompterFontSize: 28,
   teleprompterScrollSpeed: 1,
-  wordLimit: DEFAULT_WORD_LIMIT,
+  wordLimit: 500, // Fixed at 500
+  longTextMode: false, // OFF by default
 };
 
 function loadSettings(): AppSettings {
@@ -420,6 +434,60 @@ async function callChirpTTS(
   };
 }
 
+// Google Cloud Speech-to-Text API for word timestamps
+async function getTranscriptWithTimestamps(
+  apiKey: string,
+  audioBase64: string,
+  languageCode: string
+): Promise<WordTimestamp[]> {
+  const response = await fetch(
+    `https://speech.googleapis.com/v1/speech:recognize`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
+      body: JSON.stringify({
+        config: {
+          encoding: "LINEAR16",
+          sampleRateHertz: 24000,
+          languageCode: languageCode,
+          enableWordTimeOffsets: true,
+          model: "default"
+        },
+        audio: {
+          content: audioBase64
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || "Speech-to-Text API error");
+  }
+
+  const data = await response.json();
+  const timestamps: WordTimestamp[] = [];
+
+  if (data.results) {
+    for (const result of data.results) {
+      if (result.alternatives?.[0]?.words) {
+        for (const wordInfo of result.alternatives[0].words) {
+          timestamps.push({
+            word: wordInfo.word,
+            startTime: parseFloat(wordInfo.startTime?.replace('s', '') || '0'),
+            endTime: parseFloat(wordInfo.endTime?.replace('s', '') || '0')
+          });
+        }
+      }
+    }
+  }
+
+  return timestamps;
+}
+
 async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): Promise<{ audio: string; mimeType: string }> {
   if (chunks.length === 0) throw new Error("No chunks");
   if (chunks.length === 1) return chunks[0];
@@ -503,20 +571,39 @@ function encodeWAV(audioBuffer: AudioBuffer): ArrayBuffer {
   return buffer;
 }
 
-function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSize, scrollSpeed }: {
+function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSize, scrollSpeed, transcript }: {
   text: string; isPlaying: boolean; currentTime: number; duration: number; onClose: () => void;
-  fontSize: number; scrollSpeed: number;
+  fontSize: number; scrollSpeed: number; transcript?: WordTimestamp[];
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [highlightIndex, setHighlightIndex] = useState(0);
-  const words = useMemo(() => text.split(/\s+/).filter(Boolean), [text]);
-  const wordsPerSecond = duration > 0 ? (words.length / duration) * scrollSpeed : 2;
 
+  // Use transcript words if available, otherwise split text
+  const words = useMemo(() => {
+    if (transcript && transcript.length > 0) {
+      return transcript.map(t => t.word);
+    }
+    return text.split(/\s+/).filter(Boolean);
+  }, [text, transcript]);
+
+  // Calculate highlight index based on transcript timestamps or estimated timing
   useEffect(() => {
-    if (isPlaying && duration > 0) {
+    if (!isPlaying) return;
+
+    if (transcript && transcript.length > 0) {
+      // Use precise timestamps from transcript
+      const idx = transcript.findIndex(t => currentTime >= t.startTime && currentTime < t.endTime);
+      if (idx >= 0) {
+        setHighlightIndex(idx);
+      } else if (currentTime >= (transcript[transcript.length - 1]?.endTime || 0)) {
+        setHighlightIndex(transcript.length - 1);
+      }
+    } else if (duration > 0) {
+      // Fallback: estimate based on duration
+      const wordsPerSecond = (words.length / duration) * scrollSpeed;
       setHighlightIndex(Math.min(Math.floor(currentTime * wordsPerSecond), words.length - 1));
     }
-  }, [currentTime, isPlaying, duration, wordsPerSecond, words.length]);
+  }, [currentTime, isPlaying, duration, scrollSpeed, words.length, transcript]);
 
   useEffect(() => {
     if (scrollRef.current && isPlaying) {
@@ -535,6 +622,7 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
             <span className="font-semibold">Teleprompter</span>
           </div>
           <div className="flex items-center gap-3">
+            {transcript && <Badge variant="outline" className="text-xs">Synced</Badge>}
             {isPlaying && <Badge variant="secondary" className="animate-pulse">Playing</Badge>}
             <Button variant="ghost" size="icon" onClick={onClose}><X className="h-5 w-5" /></Button>
           </div>
@@ -596,9 +684,9 @@ export default function Home() {
 
   const currentModel = provider === "gemini" ? GEMINI_MODEL : CHIRP_MODEL;
   const wordCount = countWords(text);
-  const needsChunking = wordCount > settings.wordLimit;
+  const needsChunking = settings.longTextMode && wordCount > 500; // Only chunk if Long Text Mode ON and >500 words
   const currentVoice = provider === "gemini" ? voice : chirpVoice;
-  const textChunks = useMemo(() => needsChunking ? splitTextIntoChunks(text, settings.wordLimit) : [text], [text, settings.wordLimit, needsChunking]);
+  const textChunks = useMemo(() => needsChunking ? splitTextIntoChunks(text, 500) : [text], [text, needsChunking]);
 
   const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
@@ -836,6 +924,40 @@ export default function Home() {
     setClips(prev => prev.filter(c => c.id !== clipId));
   }
 
+  const [generatingTranscriptId, setGeneratingTranscriptId] = useState<string | null>(null);
+
+  // Generate transcript with timestamps for a clip using Speech-to-Text API
+  async function generateTranscriptForClip(clip: Clip) {
+    if (!apiKeys.gcloud) {
+      toast({ title: "API Key Required", description: "Add Google Cloud API key in Settings for Speech-to-Text", variant: "destructive" });
+      return;
+    }
+    if (!clip.audioData) {
+      toast({ title: "Error", description: "No audio data available", variant: "destructive" });
+      return;
+    }
+
+    setGeneratingTranscriptId(clip.id);
+    try {
+      const transcript = await getTranscriptWithTimestamps(
+        apiKeys.gcloud,
+        clip.audioData,
+        clip.settings.language || "en-US"
+      );
+
+      // Update clip with transcript
+      setClips(prev => prev.map(c =>
+        c.id === clip.id ? { ...c, transcript } : c
+      ));
+
+      toast({ title: "Transcript Generated!", description: `${transcript.length} words with timestamps saved.` });
+    } catch (err: any) {
+      toast({ title: "Transcript Error", description: err.message || "Failed to generate transcript", variant: "destructive" });
+    } finally {
+      setGeneratingTranscriptId(null);
+    }
+  }
+
   function handleOpenTeleprompter(clip: Clip) {
     setTeleprompterClip(clip);
     setShowTeleprompter(true);
@@ -861,6 +983,7 @@ export default function Home() {
             onClose={handleCloseTeleprompter}
             fontSize={settings.teleprompterFontSize}
             scrollSpeed={settings.teleprompterScrollSpeed}
+            transcript={teleprompterClip.transcript}
           />
         )}
       </AnimatePresence>
@@ -880,44 +1003,44 @@ export default function Home() {
               </TabsList>
             </Tabs>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
+            {/* Voice Selection - Scrollable Grid */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
                 <Label className="text-xs">Voice</Label>
-                {provider === "gemini" ? (
-                  <Select value={voice} onValueChange={setVoice}>
-                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {VOICES_GEMINI.map((v) => (
-                        <SelectItem key={v.name} value={v.name}>
-                          {v.name} <span className="text-muted-foreground">• {v.desc}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <Select value={chirpVoice} onValueChange={setChirpVoice}>
-                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {CHIRP_VOICE_NAMES.map((v) => (
-                        <SelectItem key={v.name} value={v.name}>
-                          {v.name} <span className="text-muted-foreground">• {v.desc}</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+                <Badge variant="outline" className="text-xs">{currentVoice}</Badge>
               </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Language</Label>
-                <Select value={language} onValueChange={setLanguage}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(provider === "chirp" ? CHIRP_LANGUAGES : LANGUAGES).map((l) => (
-                      <SelectItem key={l.code} value={l.code}>{l.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <ScrollArea className="h-32 rounded-lg border p-2">
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(provider === "gemini" ? VOICES_GEMINI : CHIRP_VOICE_NAMES).map((v) => {
+                    const isSelected = (provider === "gemini" ? voice : chirpVoice) === v.name;
+                    return (
+                      <Button
+                        key={v.name}
+                        variant={isSelected ? "default" : "ghost"}
+                        size="sm"
+                        className={`h-auto py-1.5 px-2 flex flex-col items-start text-left ${isSelected ? "" : "hover:bg-muted"}`}
+                        onClick={() => provider === "gemini" ? setVoice(v.name) : setChirpVoice(v.name)}
+                      >
+                        <span className="text-xs font-medium truncate w-full">{v.name}</span>
+                        <span className={`text-[10px] truncate w-full ${isSelected ? "text-primary-foreground/70" : "text-muted-foreground"}`}>{v.desc}</span>
+                      </Button>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </div>
+
+            {/* Language Selection */}
+            <div className="space-y-1.5">
+              <Label className="text-xs">Language</Label>
+              <Select value={language} onValueChange={setLanguage}>
+                <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                <SelectContent className="max-h-48">
+                  {(provider === "chirp" ? CHIRP_LANGUAGES : LANGUAGES).map((l) => (
+                    <SelectItem key={l.code} value={l.code}>{l.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             {/* API Key Warning */}
@@ -935,33 +1058,86 @@ export default function Home() {
               </div>
             )}
 
+            {/* Long Text Toggle */}
+            <div className="flex items-center justify-between rounded-lg border p-3">
+              <div className="flex items-center gap-2">
+                {settings.longTextMode ? (
+                  <ToggleRight className="h-4 w-4 text-primary" />
+                ) : (
+                  <ToggleLeft className="h-4 w-4 text-muted-foreground" />
+                )}
+                <div>
+                  <span className="text-sm font-medium">Long Text Mode</span>
+                  <p className="text-xs text-muted-foreground">Split text &gt;500 words into parts</p>
+                </div>
+              </div>
+              <Switch
+                checked={settings.longTextMode}
+                onCheckedChange={(v) => setSettings(prev => ({ ...prev, longTextMode: v }))}
+              />
+            </div>
+
+            {/* Script Input */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <Label className="text-xs">Script</Label>
-                <Badge variant="secondary" className="text-xs">{wordCount} words</Badge>
-              </div>
-              <Textarea value={text} onChange={(e) => setText(e.target.value)}
-                className="min-h-36 resize-none" placeholder="Enter your text here..." />
-            </div>
-
-            {/* Script Chunks Preview */}
-            {needsChunking && (
-              <div className="rounded-lg border p-3 space-y-2">
                 <div className="flex items-center gap-2">
-                  <Split className="h-4 w-4 text-primary" />
-                  <span className="text-sm font-medium">Script will be split into {textChunks.length} parts</span>
+                  <Badge variant="secondary" className="text-xs">{wordCount} words</Badge>
+                  {!settings.longTextMode && wordCount > 500 && (
+                    <Badge variant="destructive" className="text-xs">Too long! Enable Long Text Mode</Badge>
+                  )}
                 </div>
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {textChunks.map((chunk, i) => (
-                    <div key={i} className="flex items-center gap-2 text-xs p-2 rounded bg-muted/50">
-                      <Badge variant="outline" className="shrink-0">Script {i + 1}</Badge>
-                      <span className="text-muted-foreground truncate">{chunk.slice(0, 50)}...</span>
-                      <span className="ml-auto text-muted-foreground shrink-0">{countWords(chunk)} words</span>
+              </div>
+
+              {/* Single column if Long Text OFF or text is short */}
+              {(!settings.longTextMode || !needsChunking) ? (
+                <Textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  className="min-h-36 resize-none"
+                  placeholder="Enter your text here (max 500 words)..."
+                />
+              ) : (
+                /* Two-column view when Long Text ON and text is long */
+                <div className="grid grid-cols-2 gap-2">
+                  {textChunks.slice(0, 2).map((chunk, i) => (
+                    <div key={i} className="space-y-1">
+                      <Badge variant="outline" className="text-xs">Script {i + 1} ({countWords(chunk)} words)</Badge>
+                      <Textarea
+                        value={chunk}
+                        readOnly
+                        className="min-h-32 resize-none text-xs bg-muted/30"
+                      />
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              )}
+
+              {/* Show more chunks if more than 2 */}
+              {settings.longTextMode && textChunks.length > 2 && (
+                <ScrollArea className="h-24 rounded-lg border p-2">
+                  <div className="space-y-1">
+                    {textChunks.slice(2).map((chunk, i) => (
+                      <div key={i + 2} className="flex items-center gap-2 text-xs p-2 rounded bg-muted/30">
+                        <Badge variant="outline" className="shrink-0">Script {i + 3}</Badge>
+                        <span className="text-muted-foreground truncate flex-1">{chunk.slice(0, 40)}...</span>
+                        <span className="text-muted-foreground shrink-0">{countWords(chunk)}w</span>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+
+              {/* Full text input when Long Text Mode is ON */}
+              {settings.longTextMode && (
+                <Textarea
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  className="min-h-24 resize-none"
+                  placeholder="Enter your full text here..."
+                />
+              )}
+            </div>
 
             <div className="flex items-center justify-between rounded-lg border p-3">
               <div className="flex items-center gap-2">
@@ -1101,6 +1277,11 @@ export default function Home() {
                               <Badge variant="outline" className="text-xs shrink-0">
                                 {clip.provider === "gemini" ? "Gemini" : "Chirp"}
                               </Badge>
+                              {clip.transcript && (
+                                <Badge variant="secondary" className="text-xs shrink-0 bg-green-500/20 text-green-600">
+                                  <Check className="h-3 w-3 mr-0.5" /> Synced
+                                </Badge>
+                              )}
                             </div>
                             <div className="text-xs text-muted-foreground mt-0.5">
                               {formatTime(clip.createdAt)} • {countWords(clip.text)} words
@@ -1113,6 +1294,20 @@ export default function Home() {
                             </Button>
                             <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => handleOpenTeleprompter(clip)}>
                               <BookOpen className="h-4 w-4" />
+                            </Button>
+                            {/* Generate Transcript Button */}
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className={`h-8 w-8 ${clip.transcript ? "text-green-600" : "text-orange-500"}`}
+                              onClick={() => generateTranscriptForClip(clip)}
+                              disabled={generatingTranscriptId === clip.id}
+                            >
+                              {generatingTranscriptId === clip.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-4 w-4" />
+                              )}
                             </Button>
                             <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => downloadClip(clip)}>
                               <Download className="h-4 w-4" />
@@ -1136,7 +1331,9 @@ export default function Home() {
         {activeView === "teleprompter" && (
           <div className="space-y-3">
             <h2 className="font-semibold">Teleprompter</h2>
-            <p className="text-sm text-muted-foreground">Select a clip to play with teleprompter</p>
+            <p className="text-sm text-muted-foreground">
+              Select a clip. Click <RefreshCw className="h-3 w-3 inline" /> to sync word timing.
+            </p>
 
             {clips.length === 0 ? (
               <div className="text-center py-12">
@@ -1147,16 +1344,50 @@ export default function Home() {
             ) : (
               <div className="space-y-2">
                 {clips.map(clip => (
-                  <Button key={clip.id} variant="outline" className="w-full justify-start h-auto py-3"
-                    onClick={() => handleOpenTeleprompter(clip)}>
-                    <Play className="h-5 w-5 mr-3 text-primary" />
-                    <div className="text-left">
-                      <div className="font-medium">{clip.title}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {countWords(clip.text)} words • {formatTime(clip.createdAt)}
+                  <Card key={clip.id} className="bg-card/70">
+                    <CardContent className="p-3">
+                      <div className="flex items-center gap-3">
+                        <Button
+                          size="icon"
+                          variant="default"
+                          className="h-10 w-10 shrink-0"
+                          onClick={() => handleOpenTeleprompter(clip)}
+                        >
+                          <Play className="h-5 w-5" />
+                        </Button>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium truncate">{clip.title}</span>
+                            {clip.transcript ? (
+                              <Badge variant="secondary" className="text-xs bg-green-500/20 text-green-600 shrink-0">
+                                <Check className="h-3 w-3 mr-0.5" /> Synced
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="text-xs text-orange-500 shrink-0">
+                                Not synced
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {countWords(clip.text)} words • {formatTime(clip.createdAt)}
+                          </div>
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className={`h-8 w-8 shrink-0 ${clip.transcript ? "text-green-600" : "text-orange-500"}`}
+                          onClick={(e) => { e.stopPropagation(); generateTranscriptForClip(clip); }}
+                          disabled={generatingTranscriptId === clip.id}
+                        >
+                          {generatingTranscriptId === clip.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-4 w-4" />
+                          )}
+                        </Button>
                       </div>
-                    </div>
-                  </Button>
+                    </CardContent>
+                  </Card>
                 ))}
               </div>
             )}
@@ -1253,22 +1484,24 @@ export default function Home() {
             {/* Script Settings */}
             <h2 className="font-semibold">Script Processing</h2>
             <Card>
-              <CardContent className="pt-4 space-y-4">
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <Label className="text-sm">Word Limit per Script</Label>
-                    <span className="text-sm text-muted-foreground">{settings.wordLimit} words</span>
+              <CardContent className="pt-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm">Word Limit</Label>
+                    <p className="text-xs text-muted-foreground">Fixed at 500 words per chunk</p>
                   </div>
-                  <Slider
-                    value={[settings.wordLimit]}
-                    onValueChange={(v) => setSettings(prev => ({ ...prev, wordLimit: v[0] }))}
-                    min={100}
-                    max={2000}
-                    step={100}
+                  <Badge variant="secondary">500 words</Badge>
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-sm">Long Text Mode</Label>
+                    <p className="text-xs text-muted-foreground">Enable to split text &gt;500 words</p>
+                  </div>
+                  <Switch
+                    checked={settings.longTextMode}
+                    onCheckedChange={(v) => setSettings(prev => ({ ...prev, longTextMode: v }))}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Scripts longer than this will be split into multiple parts automatically.
-                  </p>
                 </div>
               </CardContent>
             </Card>
