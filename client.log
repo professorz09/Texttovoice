@@ -1,0 +1,9 @@
+
+> rest-express@1.0.0 dev:client
+> vite dev --port 5000
+
+
+  VITE v7.3.1  ready in 504 ms
+
+  ➜  Local:   http://localhost:5000/
+  ➜  Network: http://10.0.1.227:5000/

@@ -1,0 +1,11 @@
+
+> rest-express@1.0.0 dev
+> NODE_ENV=development tsx server/index.ts
+
+4:18:06 AM [express] serving on port 3000
+4:24:04 AM [vite] (client) hmr update /src/pages/home.tsx, /src/index.css
+4:24:07 AM [vite] (client) hmr update /src/pages/home.tsx, /src/index.css
+4:24:19 AM [vite] (client) hmr update /src/pages/home.tsx, /src/index.css
+4:24:21 AM [vite] (client) ✨ new dependencies optimized: next-themes
+4:24:21 AM [vite] (client) ✨ optimized dependencies changed. reloading
+[RUNTIME_ERROR]{"type":"runtime-error","timestamp":1770092661503,"name":"Error","message":"null is not an object (evaluating 'dispatcher.useContext')","stack":""}
