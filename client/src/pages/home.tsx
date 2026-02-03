@@ -15,6 +15,7 @@ import {
   Wand2,
   X,
   AlertCircle,
+  Key,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,6 +32,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
+// API Keys storage
+const API_KEYS_STORAGE = "voiceforge_api_keys";
+
+// Models
 const GEMINI_MODEL = "gemini-2.5-pro-preview-tts";
 const CHIRP_MODEL = "chirp3-hd";
 
@@ -67,23 +72,80 @@ const VOICES_GEMINI = [
   { name: "Sulafat", desc: "Warm" },
 ] as const;
 
-const VOICES_CHIRP = [
-  { name: "en-US-Chirp3-HD-Charon", desc: "English" },
-  { name: "en-US-Chirp3-HD-Kore", desc: "English" },
-  { name: "hi-IN-Chirp3-HD-Charon", desc: "Hindi" },
-  { name: "hi-IN-Chirp3-HD-Kore", desc: "Hindi" },
+// Chirp 3 HD voices (Google Cloud TTS)
+// Voice format: {languageCode}-Chirp3-HD-{voiceName}
+const CHIRP_VOICE_NAMES = [
+  { name: "Achernar", desc: "Female, Soft" },
+  { name: "Achird", desc: "Male, Friendly" },
+  { name: "Algenib", desc: "Male, Gravelly" },
+  { name: "Algieba", desc: "Male, Smooth" },
+  { name: "Alnilam", desc: "Male, Firm" },
+  { name: "Aoede", desc: "Female, Breezy" },
+  { name: "Autonoe", desc: "Female, Bright" },
+  { name: "Callirrhoe", desc: "Female, Easy-going" },
+  { name: "Charon", desc: "Male, Informative" },
+  { name: "Despina", desc: "Female, Smooth" },
+  { name: "Enceladus", desc: "Male, Breathy" },
+  { name: "Erinome", desc: "Female, Clear" },
+  { name: "Fenrir", desc: "Male, Excitable" },
+  { name: "Gacrux", desc: "Male, Mature" },
+  { name: "Iapetus", desc: "Male, Clear" },
+  { name: "Kore", desc: "Female, Firm" },
+  { name: "Laomedeia", desc: "Female, Upbeat" },
+  { name: "Leda", desc: "Female, Youthful" },
+  { name: "Orus", desc: "Male, Firm" },
+  { name: "Puck", desc: "Male, Upbeat" },
+  { name: "Pulcherrima", desc: "Female, Forward" },
+  { name: "Rasalgethi", desc: "Male, Informative" },
+  { name: "Sadachbia", desc: "Male, Lively" },
+  { name: "Sadaltager", desc: "Male, Knowledgeable" },
+  { name: "Schedar", desc: "Male, Even" },
+  { name: "Sulafat", desc: "Male, Warm" },
+  { name: "Umbriel", desc: "Male, Easy-going" },
+  { name: "Vindemiatrix", desc: "Female, Gentle" },
+  { name: "Zephyr", desc: "Female, Bright" },
+  { name: "Zubenelgenubi", desc: "Male, Casual" },
+] as const;
+
+// Supported languages for Chirp 3 HD
+const CHIRP_LANGUAGES = [
+  { code: "en-US", name: "English (US)" },
+  { code: "en-GB", name: "English (UK)" },
+  { code: "en-AU", name: "English (Australia)" },
+  { code: "en-IN", name: "English (India)" },
+  { code: "es-ES", name: "Spanish (Spain)" },
+  { code: "es-US", name: "Spanish (US)" },
+  { code: "fr-FR", name: "French" },
+  { code: "de-DE", name: "German" },
+  { code: "it-IT", name: "Italian" },
+  { code: "pt-BR", name: "Portuguese (Brazil)" },
+  { code: "ja-JP", name: "Japanese" },
+  { code: "ko-KR", name: "Korean" },
+  { code: "cmn-CN", name: "Chinese (Mandarin)" },
+  { code: "ar-XA", name: "Arabic" },
+  { code: "bn-IN", name: "Bengali" },
+  { code: "hi-IN", name: "Hindi" },
 ] as const;
 
 const LANGUAGES = [
-  { code: "en-US", name: "English" },
+  { code: "en-US", name: "English (US)" },
   { code: "hi-IN", name: "Hindi" },
+  { code: "es-ES", name: "Spanish" },
+  { code: "fr-FR", name: "French" },
+  { code: "de-DE", name: "German" },
+  { code: "ja-JP", name: "Japanese" },
 ] as const;
 
 const WORDS_LIMIT = 5000;
 const STORAGE_KEY = "voiceforge_library";
 
 type Provider = "gemini" | "chirp";
-type ActiveView = "generator" | "library" | "teleprompter";
+type ActiveView = "generator" | "library" | "teleprompter" | "settings";
+
+type ApiKeys = {
+  gemini: string;
+  gcloud: string;
+};
 
 type Clip = {
   id: string;
@@ -142,6 +204,114 @@ function saveLibraryToStorage(clips: Clip[]) {
   } catch (e) {
     console.error("Save failed:", e);
   }
+}
+
+function loadApiKeys(): ApiKeys {
+  try {
+    const data = localStorage.getItem(API_KEYS_STORAGE);
+    if (data) return JSON.parse(data);
+  } catch (e) {
+    console.error("Load API keys failed:", e);
+  }
+  return { gemini: "", gcloud: "" };
+}
+
+function saveApiKeys(keys: ApiKeys) {
+  try {
+    localStorage.setItem(API_KEYS_STORAGE, JSON.stringify(keys));
+  } catch (e) {
+    console.error("Save API keys failed:", e);
+  }
+}
+
+// Direct Gemini TTS API call
+async function callGeminiTTS(
+  apiKey: string,
+  text: string,
+  voice: string,
+  language: string
+): Promise<{ audio: string; mimeType: string }> {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voice }
+            }
+          }
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || "Gemini API error");
+  }
+
+  const data = await response.json();
+  const audioPart = data.candidates?.[0]?.content?.parts?.find(
+    (p: any) => p.inlineData?.mimeType?.startsWith("audio/")
+  );
+
+  if (!audioPart?.inlineData) {
+    throw new Error("No audio in response");
+  }
+
+  return {
+    audio: audioPart.inlineData.data,
+    mimeType: audioPart.inlineData.mimeType
+  };
+}
+
+// Direct Google Cloud TTS API call for Chirp 3 HD
+async function callChirpTTS(
+  apiKey: string,
+  text: string,
+  voiceName: string,
+  languageCode: string
+): Promise<{ audio: string; mimeType: string }> {
+  // Build full voice name: en-US-Chirp3-HD-Kore
+  const fullVoiceName = `${languageCode}-Chirp3-HD-${voiceName}`;
+
+  const response = await fetch(
+    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        input: { text },
+        voice: {
+          languageCode,
+          name: fullVoiceName
+        },
+        audioConfig: {
+          audioEncoding: "MP3"
+        }
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || "Google Cloud TTS API error");
+  }
+
+  const data = await response.json();
+  if (!data.audioContent) {
+    throw new Error("No audio in response");
+  }
+
+  return {
+    audio: data.audioContent,
+    mimeType: "audio/mp3"
+  };
 }
 
 async function mergeAudioChunks(chunks: { audio: string; mimeType: string }[]): Promise<{ audio: string; mimeType: string }> {
@@ -293,6 +463,7 @@ export default function Home() {
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
   const [voice, setVoice] = useState<string>("Kore");
+  const [chirpVoice, setChirpVoice] = useState<string>("Kore");
   const [language, setLanguage] = useState<string>("en-US");
   const [style, setStyle] = useState<string>("Warm, clear, confident");
   const [pace, setPace] = useState<number>(55);
@@ -309,48 +480,49 @@ export default function Home() {
   const [duration, setDuration] = useState(0);
   const [teleprompterClip, setTeleprompterClip] = useState<Clip | null>(null);
   const [showTeleprompter, setShowTeleprompter] = useState(false);
+  const [apiKeys, setApiKeys] = useState<ApiKeys>(() => loadApiKeys());
 
   useEffect(() => { saveLibraryToStorage(clips); }, [clips]);
-
-  const voicesForProvider = useMemo(() =>
-    provider === "gemini" ? VOICES_GEMINI : VOICES_CHIRP, [provider]);
+  useEffect(() => { saveApiKeys(apiKeys); }, [apiKeys]);
 
   const currentModel = provider === "gemini" ? GEMINI_MODEL : CHIRP_MODEL;
   const wordCount = countWords(text);
   const needsChunking = wordCount > WORDS_LIMIT;
+  const currentVoice = provider === "gemini" ? voice : chirpVoice;
 
   const handleTimeUpdate = useCallback(() => {
     const audio = audioRef.current;
     if (audio) { setCurrentTime(audio.currentTime); setDuration(audio.duration || 0); }
   }, []);
 
-  // Generate TTS - returns null if failed, no fake audio
+  // Generate TTS - direct API call from frontend
   async function generateTTS(textContent: string): Promise<{ audio: string; mimeType: string } | null> {
     try {
-      const endpoint = provider === "gemini" ? "/api/tts/gemini" : "/api/tts/chirp";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textContent, voice, language, style, pace, model: currentModel }),
-      });
-      const data = await response.json();
-
-      // Check if it's an error or demo mode - don't save fake audio
-      if (data.demo || data.error || !data.audio) {
-        const errorMsg = data.error || "API key not configured";
-        toast({
-          title: "API Error",
-          description: errorMsg,
-          variant: "destructive"
-        });
-        return null;
+      if (provider === "gemini") {
+        if (!apiKeys.gemini) {
+          toast({
+            title: "API Key Required",
+            description: "Add your Gemini API key in Settings",
+            variant: "destructive"
+          });
+          return null;
+        }
+        return await callGeminiTTS(apiKeys.gemini, textContent, voice, language);
+      } else {
+        if (!apiKeys.gcloud) {
+          toast({
+            title: "API Key Required",
+            description: "Add your Google Cloud API key in Settings",
+            variant: "destructive"
+          });
+          return null;
+        }
+        return await callChirpTTS(apiKeys.gcloud, textContent, chirpVoice, language);
       }
-
-      return { audio: data.audio, mimeType: data.mimeType || "audio/wav" };
-    } catch (err) {
+    } catch (err: any) {
       toast({
-        title: "Network Error",
-        description: "Could not connect to server",
+        title: "API Error",
+        description: err.message || "Failed to generate speech",
         variant: "destructive"
       });
       return null;
@@ -400,9 +572,9 @@ export default function Home() {
       const clip: Clip = {
         id: uid(),
         provider,
-        title: voice,
+        title: currentVoice,
         createdAt: Date.now(),
-        settings: { model: currentModel, voice, language, style, pace, multiSpeaker },
+        settings: { model: currentModel, voice: currentVoice, language, style, pace, multiSpeaker },
         text,
         audioData: audioResult.audio,
         mimeType: audioResult.mimeType,
@@ -498,29 +670,57 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs">Voice</Label>
-                <Select value={voice} onValueChange={setVoice}>
-                  <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {voicesForProvider.map((v) => (
-                      <SelectItem key={v.name} value={v.name}>
-                        {v.name} <span className="text-muted-foreground">• {v.desc}</span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                {provider === "gemini" ? (
+                  <Select value={voice} onValueChange={setVoice}>
+                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {VOICES_GEMINI.map((v) => (
+                        <SelectItem key={v.name} value={v.name}>
+                          {v.name} <span className="text-muted-foreground">• {v.desc}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Select value={chirpVoice} onValueChange={setChirpVoice}>
+                    <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {CHIRP_VOICE_NAMES.map((v) => (
+                        <SelectItem key={v.name} value={v.name}>
+                          {v.name} <span className="text-muted-foreground">• {v.desc}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
               <div className="space-y-1.5">
                 <Label className="text-xs">Language</Label>
                 <Select value={language} onValueChange={setLanguage}>
                   <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {LANGUAGES.map((l) => (
+                    {(provider === "chirp" ? CHIRP_LANGUAGES : LANGUAGES).map((l) => (
                       <SelectItem key={l.code} value={l.code}>{l.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
             </div>
+
+            {/* API Key Warning */}
+            {((provider === "gemini" && !apiKeys.gemini) || (provider === "chirp" && !apiKeys.gcloud)) && (
+              <div className="flex items-center gap-2 rounded-lg border border-yellow-500/50 bg-yellow-500/10 p-3">
+                <AlertCircle className="h-4 w-4 text-yellow-500" />
+                <div className="flex-1">
+                  <p className="text-sm text-yellow-500">
+                    {provider === "gemini" ? "Gemini" : "Google Cloud"} API key required
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" onClick={() => setActiveView("settings")}>
+                  <Key className="h-3 w-3 mr-1" /> Add Key
+                </Button>
+              </div>
+            )}
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
@@ -687,11 +887,89 @@ export default function Home() {
             )}
           </div>
         )}
+
+        {/* SETTINGS VIEW */}
+        {activeView === "settings" && (
+          <div className="space-y-4">
+            <h2 className="font-semibold">API Settings</h2>
+            <p className="text-sm text-muted-foreground">
+              Enter your API keys. Keys are stored locally on your device.
+            </p>
+
+            <Card>
+              <CardContent className="pt-4 space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Gemini API Key</Label>
+                  <p className="text-xs text-muted-foreground">
+                    For Gemini 2.5 Pro TTS. Get it from{" "}
+                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener"
+                      className="text-primary underline">Google AI Studio</a>
+                  </p>
+                  <Input
+                    type="password"
+                    placeholder="AIza..."
+                    value={apiKeys.gemini}
+                    onChange={(e) => setApiKeys(prev => ({ ...prev, gemini: e.target.value }))}
+                  />
+                  {apiKeys.gemini && (
+                    <Badge variant="secondary" className="text-xs">
+                      ✓ Key saved
+                    </Badge>
+                  )}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Google Cloud API Key</Label>
+                  <p className="text-xs text-muted-foreground">
+                    For Chirp 3 HD TTS. Get it from{" "}
+                    <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener"
+                      className="text-primary underline">Google Cloud Console</a>
+                  </p>
+                  <Input
+                    type="password"
+                    placeholder="AIza..."
+                    value={apiKeys.gcloud}
+                    onChange={(e) => setApiKeys(prev => ({ ...prev, gcloud: e.target.value }))}
+                  />
+                  {apiKeys.gcloud && (
+                    <Badge variant="secondary" className="text-xs">
+                      ✓ Key saved
+                    </Badge>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="rounded-lg border p-3 bg-muted/30">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-muted-foreground mt-0.5" />
+                <div className="text-xs text-muted-foreground">
+                  <p className="font-medium mb-1">Security Note</p>
+                  <p>API keys are stored in your browser's local storage and never sent to any server except Google's APIs.</p>
+                </div>
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => {
+                setApiKeys({ gemini: "", gcloud: "" });
+                toast({ title: "Keys cleared", description: "All API keys have been removed." });
+              }}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Clear All Keys
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* BOTTOM NAVIGATION ONLY */}
+      {/* BOTTOM NAVIGATION */}
       <div className="fixed inset-x-0 bottom-0 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto max-w-md grid grid-cols-3 py-2">
+        <div className="mx-auto max-w-md grid grid-cols-4 py-2">
           <button onClick={() => setActiveView("generator")}
             className={`flex flex-col items-center py-2 ${activeView === "generator" ? "text-primary" : "text-muted-foreground"}`}>
             <Wand2 className="h-5 w-5" />
@@ -711,6 +989,14 @@ export default function Home() {
             className={`flex flex-col items-center py-2 ${activeView === "teleprompter" ? "text-primary" : "text-muted-foreground"}`}>
             <BookOpen className="h-5 w-5" />
             <span className="text-xs mt-1">Teleprompter</span>
+          </button>
+          <button onClick={() => setActiveView("settings")}
+            className={`flex flex-col items-center py-2 relative ${activeView === "settings" ? "text-primary" : "text-muted-foreground"}`}>
+            <Key className="h-5 w-5" />
+            <span className="text-xs mt-1">Settings</span>
+            {(!apiKeys.gemini || !apiKeys.gcloud) && (
+              <span className="absolute top-1 right-1/4 bg-yellow-500 text-white text-xs rounded-full h-2 w-2" />
+            )}
           </button>
         </div>
       </div>
