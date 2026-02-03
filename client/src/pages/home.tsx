@@ -209,13 +209,75 @@ function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+// Split text into chunks at paragraph breaks (~470 words target, max 500)
 function splitTextIntoChunks(text: string, maxWords: number): string[] {
-  const words = text.trim().split(/\s+/);
   const chunks: string[] = [];
-  for (let i = 0; i < words.length; i += maxWords) {
-    chunks.push(words.slice(i, i + maxWords).join(" "));
+  const targetWords = 470; // Target ~470 words
+
+  // Split by paragraphs first (double newline or single newline)
+  const paragraphs = text.trim().split(/\n\n+|\n/);
+
+  let currentChunk: string[] = [];
+  let currentWordCount = 0;
+
+  for (const para of paragraphs) {
+    const paraWords = para.trim().split(/\s+/).filter(Boolean);
+    const paraWordCount = paraWords.length;
+
+    if (paraWordCount === 0) continue;
+
+    // If adding this paragraph exceeds max and we have content, save current chunk
+    if (currentWordCount + paraWordCount > maxWords && currentChunk.length > 0) {
+      chunks.push(currentChunk.join("\n\n"));
+      currentChunk = [];
+      currentWordCount = 0;
+    }
+
+    // If single paragraph is too long, split by sentences
+    if (paraWordCount > maxWords) {
+      // Split long paragraph by sentences
+      const sentences = para.split(/(?<=[.!?])\s+/);
+      for (const sentence of sentences) {
+        const sentenceWords = sentence.trim().split(/\s+/).filter(Boolean);
+        const sentenceWordCount = sentenceWords.length;
+
+        if (currentWordCount + sentenceWordCount > maxWords && currentChunk.length > 0) {
+          chunks.push(currentChunk.join(" "));
+          currentChunk = [];
+          currentWordCount = 0;
+        }
+
+        if (sentenceWordCount > 0) {
+          currentChunk.push(sentence.trim());
+          currentWordCount += sentenceWordCount;
+        }
+
+        // If we hit target ~470 and end of sentence, start new chunk
+        if (currentWordCount >= targetWords && sentence.trim().match(/[.!?]$/)) {
+          chunks.push(currentChunk.join(" "));
+          currentChunk = [];
+          currentWordCount = 0;
+        }
+      }
+    } else {
+      currentChunk.push(para.trim());
+      currentWordCount += paraWordCount;
+
+      // If we hit target ~470 at end of paragraph, start new chunk
+      if (currentWordCount >= targetWords) {
+        chunks.push(currentChunk.join("\n\n"));
+        currentChunk = [];
+        currentWordCount = 0;
+      }
+    }
   }
-  return chunks;
+
+  // Add remaining content
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join("\n\n"));
+  }
+
+  return chunks.filter(c => c.trim().length > 0);
 }
 
 function loadLibraryFromStorage(): Clip[] {
@@ -279,13 +341,79 @@ function saveSettings(settings: AppSettings) {
   }
 }
 
+// Convert [1] [2] markers to multi-speaker turn format
+function parseMultiSpeakerText(text: string, voice1: string, voice2: string): { turns: { speaker: string; text: string }[] } {
+  const turns: { speaker: string; text: string }[] = [];
+  // Split by [1] and [2] markers
+  const parts = text.split(/\[([12])\]/);
+
+  let currentSpeaker = voice1;
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i].trim();
+    if (part === "1") {
+      currentSpeaker = voice1;
+    } else if (part === "2") {
+      currentSpeaker = voice2;
+    } else if (part.length > 0) {
+      turns.push({ speaker: currentSpeaker, text: part });
+    }
+  }
+
+  // If no markers found, treat as single speaker
+  if (turns.length === 0 && text.trim()) {
+    turns.push({ speaker: voice1, text: text.trim() });
+  }
+
+  return { turns };
+}
+
 // Direct Gemini TTS API call
 async function callGeminiTTS(
   apiKey: string,
   text: string,
   voice: string,
-  language: string
+  language: string,
+  multiSpeaker: boolean = false,
+  voice2: string = ""
 ): Promise<{ audio: string; mimeType: string }> {
+  let requestBody: any;
+
+  if (multiSpeaker && voice2) {
+    // Multi-speaker mode using turn-based format
+    const { turns } = parseMultiSpeakerText(text, voice, voice2);
+    requestBody = {
+      contents: [{
+        parts: [{
+          text: turns.map(t => `<speaker name="${t.speaker}">${t.text}</speaker>`).join("\n")
+        }]
+      }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          multiSpeakerVoiceConfig: {
+            speakerVoiceConfigs: [
+              { speaker: voice, voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+              { speaker: voice2, voiceConfig: { prebuiltVoiceConfig: { voiceName: voice2 } } }
+            ]
+          }
+        }
+      }
+    };
+  } else {
+    // Single speaker mode
+    requestBody = {
+      contents: [{ parts: [{ text }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voice }
+          }
+        }
+      }
+    };
+  }
+
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
@@ -294,17 +422,7 @@ async function callGeminiTTS(
         "Content-Type": "application/json",
         "x-goog-api-key": apiKey
       },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voice }
-            }
-          }
-        }
-      })
+      body: JSON.stringify(requestBody)
     }
   );
 
@@ -657,13 +775,14 @@ export default function Home() {
   const { toast } = useToast();
   const [provider, setProvider] = useState<Provider>("gemini");
   const [activeView, setActiveView] = useState<ActiveView>("generator");
-  const [voice, setVoice] = useState<string>("Kore");
-  const [chirpVoice, setChirpVoice] = useState<string>("Kore");
+  const [voice, setVoice] = useState<string>("Zubenelgenubi");
+  const [voice2, setVoice2] = useState<string>("Kore"); // Second voice for 2-speaker
+  const [chirpVoice, setChirpVoice] = useState<string>("Zubenelgenubi");
   const [language, setLanguage] = useState<string>("en-US");
   const [style, setStyle] = useState<string>("Warm, clear, confident");
   const [pace, setPace] = useState<number>(55);
   const [multiSpeaker, setMultiSpeaker] = useState<boolean>(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false); // OFF by default
   const [text, setText] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [clips, setClips] = useState<Clip[]>(() => loadLibraryFromStorage());
@@ -705,7 +824,7 @@ export default function Home() {
           });
           return null;
         }
-        return await callGeminiTTS(apiKeys.gemini, textContent, voice, language);
+        return await callGeminiTTS(apiKeys.gemini, textContent, voice, language, multiSpeaker, voice2);
       } else {
         if (!apiKeys.gcloud) {
           toast({
@@ -995,7 +1114,9 @@ export default function Home() {
             <Tabs value={provider} onValueChange={(v) => {
               const p = v as Provider;
               setProvider(p);
-              setVoice(p === "gemini" ? "Kore" : "en-US-Chirp3-HD-Charon");
+              // Keep Zubenelgenubi as default for both
+              if (p === "gemini") setVoice("Zubenelgenubi");
+              else setChirpVoice("Zubenelgenubi");
             }}>
               <TabsList className="grid w-full grid-cols-2">
                 <TabsTrigger value="gemini">Gemini 2.5 Pro</TabsTrigger>
@@ -1162,9 +1283,41 @@ export default function Home() {
                   <Slider value={[pace]} onValueChange={(v) => setPace(v[0])} min={20} max={90} />
                 </div>
                 <Separator />
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs">2 Speakers</Label>
-                  <Switch checked={multiSpeaker} onCheckedChange={setMultiSpeaker} />
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <Label className="text-xs">2 Speakers Mode</Label>
+                      <p className="text-[10px] text-muted-foreground">Use [1] and [2] to mark speakers</p>
+                    </div>
+                    <Switch checked={multiSpeaker} onCheckedChange={setMultiSpeaker} />
+                  </div>
+                  {multiSpeaker && provider === "gemini" && (
+                    <div className="space-y-2 p-2 rounded bg-muted/30">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label className="text-[10px]">Speaker 1: {voice}</Label>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px]">Speaker 2</Label>
+                          <Select value={voice2} onValueChange={setVoice2}>
+                            <SelectTrigger className="h-7 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent className="max-h-40">
+                              {VOICES_GEMINI.filter(v => v.name !== voice).map((v) => (
+                                <SelectItem key={v.name} value={v.name} className="text-xs">
+                                  {v.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        Example: [1] Hello! [2] Hi there! [1] How are you?
+                      </p>
+                    </div>
+                  )}
                 </div>
               </motion.div>
             )}
