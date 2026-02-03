@@ -577,7 +577,6 @@ async function getTranscriptWithTimestamps(
 ): Promise<WordTimestamp[]> {
   // Detect encoding from mimeType or default to LINEAR16 for WAV
   let encoding = "LINEAR16";
-  let sampleRateHertz = 24000;
   
   if (mimeType?.includes("mp3")) {
     encoding = "MP3";
@@ -596,7 +595,7 @@ async function getTranscriptWithTimestamps(
       body: JSON.stringify({
         config: {
           encoding,
-          sampleRateHertz,
+          // Omit sampleRateHertz to let API auto-detect from WAV header
           languageCode,
           enableWordTimeOffsets: true,
           model: "latest_long",
