@@ -837,20 +837,20 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 bg-background flex flex-col"
+      className="fixed inset-0 z-50 bg-white dark:bg-slate-900 flex flex-col"
       style={{ 
         paddingTop: 'env(safe-area-inset-top)',
         paddingBottom: 'env(safe-area-inset-bottom)'
       }}>
       
       {/* Header */}
-      <div className="flex items-center justify-between border-b px-6 py-4 bg-background/95 backdrop-blur flex-shrink-0">
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-6 py-4 bg-white dark:bg-slate-900 flex-shrink-0">
         <div className="flex items-center gap-3">
-          <BookOpen className="h-5 w-5 text-primary" />
-          <span className="font-semibold text-lg">Teleprompter</span>
-          {transcript && <Badge variant="secondary" className="text-xs">Synced</Badge>}
+          <BookOpen className="h-5 w-5 text-purple-600 dark:text-purple-400" />
+          <span className="font-semibold text-lg text-gray-900 dark:text-white">Teleprompter</span>
+          {transcript && <Badge variant="secondary" className="text-xs bg-green-100 dark:bg-green-900 text-green-700 dark:text-green-300">Synced</Badge>}
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose}>
+        <Button variant="ghost" size="icon" onClick={onClose} className="text-gray-600 dark:text-gray-300">
           <X className="h-5 w-5" />
         </Button>
       </div>
@@ -858,7 +858,7 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
       {/* Text Display */}
       <div 
         ref={containerRef}
-        className="flex-1 overflow-y-auto scroll-smooth"
+        className="flex-1 overflow-y-auto scroll-smooth bg-white dark:bg-slate-900"
         onMouseDown={() => setIsDragging(true)}
         onMouseUp={() => setIsDragging(false)}
         onMouseLeave={() => setIsDragging(false)}
@@ -869,10 +869,10 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
               <span key={i} data-word-index={i}
                 className={`inline-block px-1 py-0.5 transition-all duration-200 ${
                   i === highlightIndex 
-                    ? "bg-primary text-primary-foreground font-bold scale-110 shadow-lg rounded px-2" 
+                    ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold scale-110 shadow-lg rounded px-2" 
                     : i < highlightIndex 
-                    ? "text-muted-foreground/30" 
-                    : "text-foreground"
+                    ? "text-gray-400 dark:text-gray-600" 
+                    : "text-gray-900 dark:text-gray-100"
                 }`}
               >{word} </span>
             ))}
@@ -881,7 +881,7 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
       </div>
 
       {/* Controls Footer */}
-      <div className="border-t bg-background/95 backdrop-blur flex-shrink-0">
+      <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-slate-900 flex-shrink-0">
         {/* Playback Controls */}
         <div className="px-6 py-4 space-y-4" style={{ paddingBottom: 'calc(1rem + env(safe-area-inset-bottom))' }}>
           <div className="flex items-center justify-center gap-3">
@@ -905,35 +905,35 @@ function Teleprompter({ text, isPlaying, currentTime, duration, onClose, fontSiz
               onChange={handleSeekTo}
               onMouseDown={() => setIsDragging(true)}
               onMouseUp={() => setIsDragging(false)}
-              className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
+              className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-purple-600 [&::-webkit-slider-thumb]:cursor-pointer [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-purple-600 [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:cursor-pointer"
               style={{
-                background: `linear-gradient(to right, hsl(var(--primary)) 0%, hsl(var(--primary)) ${(currentTime / (duration || 1)) * 100}%, hsl(var(--muted)) ${(currentTime / (duration || 1)) * 100}%, hsl(var(--muted)) 100%)`
+                background: `linear-gradient(to right, rgb(147, 51, 234) 0%, rgb(147, 51, 234) ${(currentTime / (duration || 1)) * 100}%, rgb(209, 213, 219) ${(currentTime / (duration || 1)) * 100}%, rgb(209, 213, 219) 100%)`
               }}
             />
             <div className="flex justify-between items-center text-sm">
-              <span className="text-muted-foreground font-mono">{formatTimeDisplay(currentTime)}</span>
-              <span className="text-xs text-muted-foreground">Word {highlightIndex + 1} / {words.length}</span>
-              <span className="text-muted-foreground font-mono">{formatTimeDisplay(duration)}</span>
+              <span className="text-gray-600 dark:text-gray-400 font-mono">{formatTimeDisplay(currentTime)}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-500">Word {highlightIndex + 1} / {words.length}</span>
+              <span className="text-gray-600 dark:text-gray-400 font-mono">{formatTimeDisplay(duration)}</span>
             </div>
           </div>
 
           {/* Settings Row */}
           <div className="grid grid-cols-2 gap-4">
             <div className="flex items-center gap-3">
-              <Label className="text-sm font-medium whitespace-nowrap">Size</Label>
+              <Label className="text-sm font-medium whitespace-nowrap text-gray-700 dark:text-gray-300">Size</Label>
               <input
                 type="range"
                 min="16"
                 max="64"
                 value={localFontSize}
                 onChange={(e) => setLocalFontSize(parseInt(e.target.value))}
-                className="flex-1 h-2 bg-muted rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-primary [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-primary [&::-moz-range-thumb]:border-0"
+                className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-purple-600 [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-purple-600 [&::-moz-range-thumb]:border-0"
               />
-              <span className="text-sm text-muted-foreground w-12 text-right font-mono">{localFontSize}px</span>
+              <span className="text-sm text-gray-600 dark:text-gray-400 w-12 text-right font-mono">{localFontSize}px</span>
             </div>
             
             <div className="flex items-center gap-3">
-              <Label className="text-sm font-medium whitespace-nowrap">Speed</Label>
+              <Label className="text-sm font-medium whitespace-nowrap text-gray-700 dark:text-gray-300">Speed</Label>
               <div className="flex gap-1">
                 {[0.5, 0.75, 1, 1.25, 1.5, 2].map(speed => (
                   <Button
