@@ -1443,16 +1443,17 @@ export default function Home() {
     
     try {
       const sizeBytes = (clip.audioData.length * 3) / 4;
-      const maxChunkSize = 9000000; // 9MB to be safe
+      const maxChunkSize = 8000000; // 8MB to be safe (leaves room for API overhead)
       
       // If audio is larger than 10MB, split into chunks
       if (sizeBytes > 10000000) {
         toast({ 
           title: "Processing Large Audio", 
-          description: "Splitting audio into chunks for transcription...",
+          description: "Splitting into smaller chunks...",
         });
         
-        // Decode audio to split it
+        // Calculate how many chunks we need based on duration
+        // Decode audio to get duration
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const binary = atob(clip.audioData);
         const bytes = new Uint8Array(binary.length);
@@ -1461,17 +1462,22 @@ export default function Home() {
         }
         
         const audioBuffer = await audioContext.decodeAudioData(bytes.buffer.slice(0));
-        const duration = audioBuffer.duration;
-        const chunkDuration = (maxChunkSize / sizeBytes) * duration;
-        const numChunks = Math.ceil(duration / chunkDuration);
+        const totalDuration = audioBuffer.duration;
+        
+        // Calculate chunk duration to keep each chunk under 8MB
+        const bytesPerSecond = sizeBytes / totalDuration;
+        const chunkDuration = maxChunkSize / bytesPerSecond;
+        const numChunks = Math.ceil(totalDuration / chunkDuration);
         
         let allTranscripts: WordTimestamp[] = [];
         
         // Process each chunk
         for (let i = 0; i < numChunks; i++) {
           const startTime = i * chunkDuration;
-          const endTime = Math.min((i + 1) * chunkDuration, duration);
-          const chunkLength = Math.floor((endTime - startTime) * audioBuffer.sampleRate);
+          const endTime = Math.min((i + 1) * chunkDuration, totalDuration);
+          const startSample = Math.floor(startTime * audioBuffer.sampleRate);
+          const endSample = Math.floor(endTime * audioBuffer.sampleRate);
+          const chunkLength = endSample - startSample;
           
           // Create chunk buffer
           const chunkBuffer = audioContext.createBuffer(
@@ -1483,9 +1489,8 @@ export default function Home() {
           for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
             const sourceData = audioBuffer.getChannelData(channel);
             const chunkData = chunkBuffer.getChannelData(channel);
-            const offset = Math.floor(startTime * audioBuffer.sampleRate);
             for (let j = 0; j < chunkLength; j++) {
-              chunkData[j] = sourceData[offset + j];
+              chunkData[j] = sourceData[startSample + j];
             }
           }
           
