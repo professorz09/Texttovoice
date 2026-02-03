@@ -313,12 +313,6 @@ function saveLibraryToStorage(clips: Clip[]) {
     }
   }
 }
-      } catch (retryError) {
-        console.error("Retry save failed:", retryError);
-      }
-    }
-  }
-}
 
 function loadApiKeys(): ApiKeys {
   try {
