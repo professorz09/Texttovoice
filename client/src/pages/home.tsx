@@ -232,10 +232,13 @@ async function callGeminiTTS(
   language: string
 ): Promise<{ audio: string; mimeType: string }> {
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
       body: JSON.stringify({
         contents: [{ parts: [{ text }] }],
         generationConfig: {
@@ -257,17 +260,76 @@ async function callGeminiTTS(
 
   const data = await response.json();
   const audioPart = data.candidates?.[0]?.content?.parts?.find(
-    (p: any) => p.inlineData?.mimeType?.startsWith("audio/")
+    (p: any) => p.inlineData
   );
 
   if (!audioPart?.inlineData) {
     throw new Error("No audio in response");
   }
 
+  // Gemini returns PCM audio - convert to WAV for playback
+  const pcmBase64 = audioPart.inlineData.data;
+  const mimeType = audioPart.inlineData.mimeType || "audio/L16;rate=24000";
+
+  // If it's raw PCM, wrap it in WAV header
+  if (mimeType.includes("L16") || mimeType.includes("pcm")) {
+    const wavBase64 = pcmToWav(pcmBase64, 24000);
+    return { audio: wavBase64, mimeType: "audio/wav" };
+  }
+
   return {
-    audio: audioPart.inlineData.data,
-    mimeType: audioPart.inlineData.mimeType
+    audio: pcmBase64,
+    mimeType: mimeType
   };
+}
+
+// Convert PCM to WAV format
+function pcmToWav(pcmBase64: string, sampleRate: number): string {
+  const pcmData = atob(pcmBase64);
+  const pcmLength = pcmData.length;
+
+  // WAV header is 44 bytes
+  const wavLength = 44 + pcmLength;
+  const buffer = new ArrayBuffer(wavLength);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, wavLength - 8, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // chunk size
+  view.setUint16(20, 1, true); // PCM format
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+
+  // data chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, pcmLength, true);
+
+  // PCM data
+  const uint8 = new Uint8Array(buffer);
+  for (let i = 0; i < pcmLength; i++) {
+    uint8[44 + i] = pcmData.charCodeAt(i);
+  }
+
+  // Convert to base64
+  let binary = '';
+  for (let i = 0; i < uint8.length; i++) {
+    binary += String.fromCharCode(uint8[i]);
+  }
+  return btoa(binary);
+}
+
+function writeString(view: DataView, offset: number, str: string) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
+  }
 }
 
 // Direct Google Cloud TTS API call for Chirp 3 HD
@@ -281,10 +343,13 @@ async function callChirpTTS(
   const fullVoiceName = `${languageCode}-Chirp3-HD-${voiceName}`;
 
   const response = await fetch(
-    `https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`,
+    `https://texttospeech.googleapis.com/v1/text:synthesize`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
+      },
       body: JSON.stringify({
         input: { text },
         voice: {
